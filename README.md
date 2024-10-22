@@ -1,4 +1,4 @@
-# ArdOxy
+# Ardoxy
 An Arduino library for interfacing with PyroScience FireSting oxygen meters.
 
 ## Use Cases
