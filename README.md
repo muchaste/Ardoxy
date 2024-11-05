@@ -13,7 +13,7 @@ This project is under development.
 ## Table of Contents
 * [Quick Start](#quick-start)
   * [Example 1](#example-1-measure_DO)
-  * [Example 2](#example-2-measure_and_plot)
+  * [Example 2](#example-2-setpoint_solenoid)
 * [Background](#background)
 * [Long-Term Oxygen Control: Basic Setup](#long-term-oxygen-control-basic-setup)
   * [List of Materials](#list-of-materials)
@@ -35,14 +35,16 @@ This project is under development.
 5. Connect the Arduino to the meter as described in the example sketch and upload the sketch to the Arduino. Follow measurements using, e.g., the Serial Monitor.
 
 ### Example 1: measure_DO
-This example simply triggers a DO measurement in an adjustable interval and prints the measurement status (1 if successful, 0 if no connection, 9 if communication mismatch) along with the measurement result to the serial monitor (I'd recommend the default serial monitor of the Arduino IDE).
+This example sketch sends temperature and DO measurements via serial to the PC. To plot these values, [download SerialPlot](https://hackaday.io/project/5334-serialplot-realtime-plotting-software) and load the settings file from this repo ([link](./SerialPlotter%20config%20measure%20and%20plot.ini). This great piece of software allows you to send commands (to trigger the start of measurements) and to visualize and log values.
 ![Measure_DO_example](./images/measure_DO_screencapture.gif)
 
 
-### Example 2: measure_and_plot
-This example sketch sends temperature and DO measurements via serial to the PC. To plot these values, [download SerialPlot](https://hackaday.io/project/5334-serialplot-realtime-plotting-software) and load the settings file from this repo ([link](./SerialPlotter%20config%20measure%20and%20plot.ini). This great piece of software allows you to send commands (to trigger the start of measurements) and to visualize and log values.
+### Example 2: setpoint_solenoid
+This example sketch controls DO via solenoid valves that are connected to a relay module. The measured values are sent to the computer via serial connection and can be plotted (as above) or logged, e.g., using [ExtraPuTTY](https://sourceforge.net/projects/extraputty/). The Arduino opens the valves to allow gas flow (nitrogen or air/oxygen) to regulate DO to a defined setpoint for a defined duration.
 
-![measure_and_plot_example](./images/measure_and_plot_screencapture.gif)
+### Python Sketch Builder
+The [Python Sketch Builder](./Python programs/Single Setpoint Sketch Builder.py) is a simple program with a graphical user interface that lets users set the most important parameters for single-setpoint (static) DO control programs and create an Arduino sketch for upload.
+![Python_Sketch_Builder](./images/Sketch Builder GUI.png)
 
 
 ## Background
