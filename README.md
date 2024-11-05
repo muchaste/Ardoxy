@@ -14,6 +14,7 @@ This project is under development.
 * [Quick Start](#quick-start)
   * [Example 1](#example-1-measure_DO)
   * [Example 2](#example-2-setpoint_solenoid)
+  * [Python Sketch Builder](#Python-Sketch-Builder)
 * [Background](#background)
 * [Long-Term Oxygen Control: Basic Setup](#long-term-oxygen-control-basic-setup)
   * [List of Materials](#list-of-materials)
@@ -38,13 +39,12 @@ This project is under development.
 This example sketch sends temperature and DO measurements via serial to the PC. To plot these values, [download SerialPlot](https://hackaday.io/project/5334-serialplot-realtime-plotting-software) and load the settings file from this repo ([link](./SerialPlotter%20config%20measure%20and%20plot.ini). This great piece of software allows you to send commands (to trigger the start of measurements) and to visualize and log values.
 ![Measure_DO_example](./images/measure_DO_screencapture.gif)
 
-
 ### Example 2: setpoint_solenoid
 This example sketch controls DO via solenoid valves that are connected to a relay module. The measured values are sent to the computer via serial connection and can be plotted (as above) or logged, e.g., using [ExtraPuTTY](https://sourceforge.net/projects/extraputty/). The Arduino opens the valves to allow gas flow (nitrogen or air/oxygen) to regulate DO to a defined setpoint for a defined duration.
 
 ### Python Sketch Builder
-The [Python Sketch Builder](./Python programs/Single Setpoint Sketch Builder.py) is a simple program with a graphical user interface that lets users set the most important parameters for single-setpoint (static) DO control programs and create an Arduino sketch for upload.
-![Python_Sketch_Builder](./images/Sketch Builder GUI.png)
+The [Python Sketch Builder](./Python%20programs/Single%20Setpoint%20Sketch%20Builder.py) is a simple program with a graphical user interface that lets users set the most important parameters for single-setpoint (static) DO control programs and create an Arduino sketch for upload.
+![Python_Sketch_Builder](./images/Sketch%20Builder%20GUI.png)
 
 
 ## Background
