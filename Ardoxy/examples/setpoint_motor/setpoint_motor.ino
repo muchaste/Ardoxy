@@ -1,28 +1,25 @@
 /*
-  Ardoxy example - measure, control solenoid and plot using SerialPlot (https://hackaday.io/project/5334-serialplot-realtime-plotting-software)
+  Ardoxy example
 
-  Trigger a measurement sequence (DO, temperature, air pressure) and read out the results. Receive and plot with SerialPlot software.
-  Set desired DO level by opening a solenoid valve. Opening time is calculated with PID library.
-  
+  Regulate DO to a static setpoint with defined experimental duration using a stepper motor connected to a needle valve.
   Oxygen sensor is calbrated using the Pyro Oxygen Logger Software.
   Oxygen probe is connected to channel 1.
   
   The circuit:
   - Arduino Uno
-  - FireStingO2 - 7 pin connector:
+  - FireStingO2 - 7 pin connector X1:
     *Pin 1 connected to Arduino GND
     *Pin 2 connected to Arduino 5V 
     *Pin 4 connected to Arduino RX (here: 8)
     *Pin 5 connected to Arduino TX (here: 9)
-  - Solenoid valve on relay module, connected to digital pin on Arduino (here: 3)
+  - Stepper motor connected to motor shield
 
   The software:
-  Download SerialPlot and use the configuration file (*.ini) from the Ardoxy github repository.
+  Download SerialPlot (https://hackaday.io/project/5334-serialplot-realtime-plotting-software)
+  and use the configuration file (*.ini) from the Ardoxy github repository.
   Import the settings in SerialPlot using File>>Load Settings
-  Or simply read the values from the serial monitor.
+  Or simply read the values from the serial monitor or use another serial logging software (PuTTy etc.)
 
-  created 11 November 2021
-  last revised 3 March 2022
   by Stefan Mucha
 
 */
@@ -30,29 +27,27 @@
 #include <Ardoxy.h>
 #include <SoftwareSerial.h>
 #include <PID_v1.h>
+#include <Stepper.h>
+#include <Wire.h>
+#include <Adafruit_MotorShield.h>
 
 //#######################################################################################
 //###                              General settings                                   ###
 //#######################################################################################
 
 // Set experimental conditions
-unsigned long sampInterval = 5000;                    // sampling interval in ms (due to the duration of the measurement and communication, use interval > 1000 msec)
-double airSatThreshold = 40.00;                       // target air saturation value
-unsigned long experimentDuration = 20 * 60 * 1000UL;  // duration for controlled DO in ms
+const int sampInterval = 2000;                        // sampling interval in ms (due to the duration of the measurement and communication, use interval > 1000 msec)
+double airSatThreshold = 30.00;                       // target air saturation value
+unsigned int experimentDuration = 60;                 // duration for controlled DO in min
 
 // Define pins
 const int RX = 8;                                     // RX and TX pins for serial communication with FireStingO2
 const int TX = 9;                                     // RX and TX pins for serial communication with FireStingO2
-const int relayPin = 3;                               // output pin to relay module
 
 // Define coefficients for PID control. TEST THE SETTINGS FOR PID CONTROL BEFORE YOU USE THIS SYSTEM!!   
-double Kp = 10;                                       // coefficient for proportional control
+double Kp = 20;                                        // coefficient for proportional control
 double Ki = 1;                                        // coefficient for integrative control
-double Kd = 1;                                        // coefficient for differential control
-long int windowSize = round(sampInterval/200);        // PID controller will calculate an output between 0 and windowSize.
-                                                      // This will be multiplied by 200 to ensure a minimum opening time of 200 msec to protect the relays. 
-                                                      // E.g. output = 1 -> opening time 200 msec; output 50 -> opening time 10,000 msec
-
+double Kd = 0;                                        // coefficient for differential control
 
 //#######################################################################################
 //###                           Requisite variables                                   ###
@@ -65,10 +60,16 @@ long int windowSize = round(sampInterval/200);        // PID controller will cal
 long DOInt, tempInt;                        // for measurement result
 double DOFloat, tempFloat;                  // measurement result as floating point number
 int check;                                  // numerical indicator of succesful measurement (1: success, 0: no connection, 9: mismatch)
-char DOReadCom[11] = "REA 1 3 4\r";         // template for DO-read command that is sent to sensor
-char tempReadCom[11] = "REA 1 3 5\r";       // template for temp-read command that is sent to sensor
-int open = LOW;
-int closed = HIGH;
+const int measureDur = 500;                 // duration of measurement in ms (-> during this time, the system is blocked)
+
+// Motor settings
+const int stepsPerRevolution = 200;                       // number of steps per motor revolution
+const int opened = round(stepsPerRevolution*1.5);         // maximum opening position of valve
+const int motorSpeed = 10;                                // motor speed in rpm
+const int closed = 0;                                     // minimum opening of valve
+int stepCount = 0;                                        // counts motor steps to control motor position
+const int stepsPerInterval = floor(stepsPerRevolution*(motorSpeed/3)*((sampInterval-measureDur)/(60.0*1000)));
+                                                          // the max. number of steps that can be adjusted per interval
 
 // Measurement timing
 unsigned long loopStart, elapsed;           // ms timestamp of beginning and end of measurement loop
@@ -78,37 +79,35 @@ unsigned long progStart, progEnd;           // ms timestamp of beginning and end
 bool startTrigger = false;                  // trigger for start of measurement
 bool valveOpen = false;                     // indicator if the solenoid should remain open over one loop iteration
 
+// Instances
+SoftwareSerial mySer(RX, TX);               // serial connection to the Firesting
+Ardoxy ardoxy(mySer);                       // ardoxy instance
+
 // PID control
 double output;                              // holds output that was calculated by PID library
-
-
-//#######################################################################################
-//###                            Initiate Instances                                   ###
-//#######################################################################################
-
+int PIDsteps;                               // output of PID algorithm
 PID valvePID(&DOFloat, &output, &airSatThreshold, Kp, Ki, Kd, REVERSE);
-SoftwareSerial mySer(RX, TX);
-Ardoxy ardoxy(mySer);
 
+// initialize the stepper library
+Adafruit_MotorShield AFMS = Adafruit_MotorShield(); 
+Adafruit_StepperMotor *myStepper = AFMS.getStepper(stepsPerRevolution, 2);
 
 //#######################################################################################
 //###                                   Setup                                         ###
 //#######################################################################################
 
 void setup() {
-  // Start serial communication
   Serial.begin(19200);
+  AFMS.begin();
   delay(100);
+
+  // Set the motor speed (RPMs):
+  myStepper->setSpeed(10);
 
   // Set up PID control
   valvePID.SetMode(AUTOMATIC);
   valvePID.SetSampleTime(sampInterval);
-  valvePID.SetOutputLimits(0, windowSize);
-
-  // Declare output pins for relay operation and write HIGH to close valves (THIS MIGHT DEPEND ON YOUR VALVES)
-  pinMode(relayPin, OUTPUT);
-  delay(50);
-  digitalWrite(relayPin, closed);
+  valvePID.SetOutputLimits(0, opened);
 
   // Print experimental conditions
   Serial.println("------------ Ardoxy measure and control example ------------");
@@ -130,16 +129,17 @@ void loop() {
       case '1':
           startTrigger = true;
           ardoxy.begin();                                 // Start serial communication with FireSting
-          Serial.println("DO_air_sat;Temp_deg_C;Open_time");
+          Serial.println("DO_air_sat;Temp_deg_C;Open_steps");
           // Define time points for decrease end and trial end
           progStart = millis();
-          progEnd = progStart + experimentDuration;
+          progEnd = progStart + experimentDuration * 60 * 1000UL;
           break;
       case '0':
           startTrigger = false;
           ardoxy.end();
           Serial.println("Stopped");
-          digitalWrite(relayPin, closed);
+          myStepper->step(stepCount, BACKWARD, MICROSTEP);
+          stepCount = 0;
           break;
     }
   }
@@ -151,56 +151,56 @@ void loop() {
     if (loopStart <= progEnd){
       check = ardoxy.measureSeq(1);             // measure sequence on channel 1
       if(check == 1){
-        DOInt = ardoxy.readout(DOReadCom);      // read DO value from results register
-        delay(20);
-        tempInt = ardoxy.readout(tempReadCom);  // read temperature value from results register
-        delay(20);
-
-        // convert to floating point numbers
-        DOFloat = DOInt / 1000.00;
+        tempInt = ardoxy.readoutTemp();  // read temperature value from results register
         tempFloat = tempInt / 1000.00;
-        
-        // compute opening time of solenoid valve
+
+        DOInt = ardoxy.readoutDO(1);      // read DO value from results register
+        DOFloat = DOInt / 1000.00;
+
+        // compute opening state of needle valve (= steps of the motor)
         valvePID.Compute();
+
+        // Operate stepper motor
+        PIDsteps = round(output);
+        if(PIDsteps > stepCount) {
+          if((PIDsteps - stepCount) > stepsPerInterval) {
+            PIDsteps = stepCount + stepsPerInterval;
+            output = PIDsteps * 1.0;
+          }
+          myStepper->step(int(PIDsteps-stepCount), FORWARD, MICROSTEP);
+        } else if (PIDsteps < stepCount){
+          if((stepCount - PIDsteps) > stepsPerInterval) {
+            PIDsteps = stepCount - stepsPerInterval;
+            output = PIDsteps * 1.0;
+          }
+          myStepper->step(int(stepCount-PIDsteps), BACKWARD, MICROSTEP);
+        }
+        stepCount = PIDsteps;
 
         // Print to serial
         Serial.print(DOFloat);
         Serial.print(";");
         Serial.print(tempFloat);
         Serial.print(";");
-        Serial.println(round(output*200/1000));
+        Serial.println(PIDsteps);
 
-        // operate solenoid
-        if (output*200 < sampInterval) {        // if the opening time is smaller than the loop duration...
-          if (valveOpen) {                      // ...if the valve was open from the previous loop, open for the calculated duration, then close
-            delay(output*200);
-            digitalWrite(relayPin, closed);
-            valveOpen = false;
-          }
-          else {
-            digitalWrite(relayPin, open);
-            delay(output*200);
-            digitalWrite(relayPin, closed);
-          }
-        }
-        else {
-          if (!valveOpen) {
-            digitalWrite(relayPin, open);
-            valveOpen = true;
-          }
-        }
         // wait for next loop iteration
         elapsed = millis()-loopStart;
-        delay(sampInterval - elapsed);          
+        if (sampInterval > elapsed) {
+          delay(sampInterval - elapsed);          
+        }
       }  
       else {       // If the measurement returns with an error
-        digitalWrite(relayPin, closed);
+        myStepper->step(stepCount, BACKWARD, MICROSTEP);
+        stepCount = 0;
         Serial.println("Com error. Check connections and send \"1\" to restart.");
+        ardoxy.end();
         startTrigger = false;
       }
     }
     else {
-      digitalWrite(relayPin, closed);
+      myStepper->step(stepCount, BACKWARD, MICROSTEP);
+      stepCount = 0;
       Serial.println("End of experiment. Arduino stopps. Send \"1\" to re-start.");
       ardoxy.end();
       startTrigger = false;

@@ -1,14 +1,20 @@
 
 /*
-  Ardoxy example - measure and control 4 channels via solenoids 
+  Ardoxy example
   
-  Trigger a measurement sequence (DO, temperature, air pressure) and read out the results. 
-  Display on LCD and store on SD card.
-  Set desired DO level by opening a solenoid valve. 
-  Opening time is calculated with PID library.
-  
+  Regulate DO to a sequence of setpoints with defined durations using solenoid valves.
+  DO is displayed on LCD and stored on SD card.
   Oxygen sensor is calbrated using the Pyro Oxygen Logger Software.
-  
+  A flyback diode is connected to the +/- poles of the valves to protect the circuit from inductive charges
+
+  You must define the following variables:
+  - sampleInterval - Sample interval in ms
+  - channelNumber - number of channels
+  - channelArray - channel on FireSting meter where oxygen sensors are connected
+  - pin numers
+  - number of phases (i.e., steps of the sequence)
+  - DO setpoints (airSatThresholds), durations, and phase-type (change or hold) for each phase of the sequence
+  - *optionally* adjust the PID tunings (Kp, Ki, Kd) for the PID controller
   The circuit:
   - Arduino Mega
   - Adafruit datalogger shield with SD card and RTC
@@ -17,14 +23,12 @@
     *Pin 2 connected to Arduino 5V 
     *Pin 4 connected to Arduino RX1 (here: 19)
     *Pin 5 connected to Arduino TX1 (here: 18)
-  - Solenoid valve on relay module, connected to digital pins on Arduino (here: 2-5)
+  - Solenoid valve on relay module, connected to digital pins on Arduino (here: 46, 48, 50, 52)
 
   The software:
   No software needed, values are stored on SD card, or
   simply read the values from the serial monitor or LCD display
 
-  created 11 November 2021
-  last revised: 3 March 2022
   by Stefan Mucha
 
 */
