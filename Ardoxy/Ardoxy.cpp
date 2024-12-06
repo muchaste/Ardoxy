@@ -166,9 +166,10 @@ int Ardoxy::getVer()
 // 1 when echo matches command
 // 0 when there is no echo (connection problem)
 // 9 when there is a mismatch (usually due to timing or connection issues)
-int Ardoxy::measure(char command[], int serialDelay=300)
+int Ardoxy::measure(char command[])//, int serialDelay=300)
 {
   int result;
+  unsigned long startTime; // Used for timeout
 
   // Set source Stream
   stream = !hwStream? (Stream*)swStream : hwStream;
@@ -183,29 +184,33 @@ int Ardoxy::measure(char command[], int serialDelay=300)
   stream->write(command);
   stream->flush();
   bool received = false;      // Switch to continue reading incoming data until end marker was received
-  delay(serialDelay);                 // Let Firesting finish measurement before reading incoming serial data
 
-  if(!stream->available()){ // If there is no incoming data, there is a connection problem
-    result = 0;
-  }
-  else{
-    while (stream->available() > 0 && received == false && ndx <= numChars-1) {
-      delay(2);
-      rc = stream->read();
-      if (rc != endMarker && ndx < numChars-1) {
-        receivedChars[ndx] = rc;
-        ndx++;
+  // Wait for data with timeout mechanism
+  startTime = millis();
+  while (!stream->available()) {
+      if (millis() - startTime > 1000) {
+          result = 0; // Indicate a timeout error
+          return result;
       }
-      else {
-        receivedChars[ndx] = '\0';  // terminate the string
-        ndx = 0;
-        received = true;
-        if(strncmp(command, receivedChars, (strlen(command)-1)) == 0){ // Compare command and received string (FS echoes the command)
-          result = 1;
-        }
-        else{
-          result = 9;             // return 9 if there is a mismatch
-        }
+      delay(delayPerCheck);
+  }
+
+  while (stream->available() > 0 && received == false && ndx <= numChars-1) {
+    delay(2);
+    rc = stream->read();
+    if (rc != endMarker && ndx < numChars-1) {
+      receivedChars[ndx] = rc;
+      ndx++;
+    }
+    else {
+      receivedChars[ndx] = '\0';  // terminate the string
+      ndx = 0;
+      received = true;
+      if(strncmp(command, receivedChars, (strlen(command)-1)) == 0){ // Compare command and received string (FS echoes the command)
+        result = 1;
+      }
+      else{
+        result = 9;             // return 9 if there is a mismatch
       }
     }
   }
@@ -213,14 +218,14 @@ int Ardoxy::measure(char command[], int serialDelay=300)
 }
 
 // Measure Sequence function: same as measure function but with pre-set measurement command
-int Ardoxy::measureSeq(int chan, int serialDelay=500)
+int Ardoxy::measureSeq(int chan)//, int serialDelay=700)
 {
   int result;
-  //char command;
+  unsigned long startTime; // Used for timeout
 
   // Paste Channel in measurement command
   if(ver >= 400){
-    sprintf(measCommand, "MEA %d 3\r", chan);           // insert channel in measurement command
+    sprintf(measCommand, "MEA %d 47\r", chan);           // insert channel in measurement command
   } else if (ver < 400) {
     sprintf(measCommand, "SEQ %d\r", chan);           // insert channel in measurement command
   }
@@ -238,29 +243,33 @@ int Ardoxy::measureSeq(int chan, int serialDelay=500)
   stream->write(measCommand);
   stream->flush();
   bool received = false;      // Switch to continue reading incoming data until end marker was received
-  delay(serialDelay);         // Let Firesting finish measurement before reading incoming serial data
 
-  if(!stream->available()){ // If there is no incoming data, there is a connection problem
-    result = 0;
-  }
-  else{
-    while (stream->available() > 0 && received == false && ndx <= numChars-1) {
-      delay(2);
-      rc = stream->read();
-      if (rc != endMarker && ndx < numChars-1) {
-        receivedChars[ndx] = rc;
-        ndx++;
+  // Wait for data with timeout mechanism
+  startTime = millis();
+  while (!stream->available()) {
+      if (millis() - startTime > 1000) {
+          result = 0; // Indicate a timeout error
+          return result;
       }
-      else {
-        receivedChars[ndx] = '\0';  // terminate the string
-        ndx = 0;
-        received = true;
-        if(strncmp(measCommand, receivedChars, (strlen(measCommand)-1)) == 0){ // Compare command and received string (FS echoes the command)
-          result = 1;
-        }
-        else{
-          result = 9;             // return 9 if there is a mismatch
-        }
+      delay(delayPerCheck);
+  }
+
+  while (stream->available() > 0 && received == false && ndx <= numChars-1) {
+    delay(2);
+    rc = stream->read();
+    if (rc != endMarker && ndx < numChars-1) {
+      receivedChars[ndx] = rc;
+      ndx++;
+    }
+    else {
+      receivedChars[ndx] = '\0';  // terminate the string
+      ndx = 0;
+      received = true;
+      if(strncmp(measCommand, receivedChars, (strlen(measCommand)-1)) == 0){ // Compare command and received string (FS echoes the command)
+        result = 1;
+      }
+      else{
+        result = 9;             // return 9 if there is a mismatch
       }
     }
   }
@@ -268,9 +277,10 @@ int Ardoxy::measureSeq(int chan, int serialDelay=500)
 }
 
 // Measure DO function: same as measure function but with pre-set measurement command
-int Ardoxy::measureDO(int chan, int serialDelay=100)
+int Ardoxy::measureDO(int chan)//, int serialDelay=100)
 {
   int result;
+  unsigned long startTime; // Used for timeout
 
   // Paste Channel in measurement command
   if(ver >= 400){
@@ -293,29 +303,33 @@ int Ardoxy::measureDO(int chan, int serialDelay=100)
   stream->write(measCommand);
   stream->flush();
   bool received = false;      // Switch to continue reading incoming data until end marker was received
-  delay(serialDelay);         // Let Firesting finish measurement before reading incoming serial data
 
-  if(!stream->available()){ // If there is no incoming data, there is a connection problem
-    result = 0;
-  }
-  else{
-    while (stream->available() > 0 && received == false && ndx <= numChars-1) {
-      delay(2);
-      rc = stream->read();
-      if (rc != endMarker && ndx < numChars-1) {
-        receivedChars[ndx] = rc;
-        ndx++;
+  // Wait for data with timeout mechanism
+  startTime = millis();
+  while (!stream->available()) {
+      if (millis() - startTime > 1000) {
+          result = 0; // Indicate a timeout error
+          return result;
       }
-      else {
-        receivedChars[ndx] = '\0';  // terminate the string
-        ndx = 0;
-        received = true;
-        if(strncmp(measCommand, receivedChars, (strlen(measCommand)-1)) == 0){ // Compare command and received string (FS echoes the command)
-          result = 1;
-        }
-        else{
-          result = 9;             // return 9 if there is a mismatch
-        }
+      delay(delayPerCheck);
+  }
+
+  while (stream->available() > 0 && received == false && ndx <= numChars-1) {
+    delay(2);
+    rc = stream->read();
+    if (rc != endMarker && ndx < numChars-1) {
+      receivedChars[ndx] = rc;
+      ndx++;
+    }
+    else {
+      receivedChars[ndx] = '\0';  // terminate the string
+      ndx = 0;
+      received = true;
+      if(strncmp(measCommand, receivedChars, (strlen(measCommand)-1)) == 0){ // Compare command and received string (FS echoes the command)
+        result = 1;
+      }
+      else{
+        result = 9;             // return 9 if there is a mismatch
       }
     }
   }
@@ -323,14 +337,15 @@ int Ardoxy::measureDO(int chan, int serialDelay=100)
 }
 
 // Measure DO function: same as measure function but with pre-set measurement command
-int Ardoxy::measureTemp(int serialDelay=300)
+int Ardoxy::measureTemp()//int serialDelay=300)
 {
   int result;
   int chan = 1;
+  unsigned long startTime; // Used for timeout
 
   // Paste Channel in measurement command
   if(ver >= 400){
-    sprintf(measCommand, "MEA %d 3\r", chan);           // insert channel in measurement command
+    sprintf(measCommand, "MEA %d 2\r", chan);           // insert channel in measurement command
   } else if (ver < 400) {
     sprintf(measCommand, "TMP %d\r", chan);           // insert channel in measurement command
   }
@@ -348,32 +363,37 @@ int Ardoxy::measureTemp(int serialDelay=300)
   stream->write(measCommand);
   stream->flush();
   bool received = false;      // Switch to continue reading incoming data until end marker was received
-  delay(serialDelay);         // Let Firesting finish measurement before reading incoming serial data
 
-  if(!stream->available()){ // If there is no incoming data, there is a connection problem
-    result = 0;
-  }
-  else{
-    while (stream->available() > 0 && received == false && ndx <= numChars-1) {
-      delay(2);
-      rc = stream->read();
-      if (rc != endMarker && ndx < numChars-1) {
-        receivedChars[ndx] = rc;
-        ndx++;
+  // Wait for data with timeout mechanism
+  startTime = millis();
+  while (!stream->available()) {
+      if (millis() - startTime > 1000) {
+          result = 0; // Indicate a timeout error
+          return result;
       }
-      else {
-        receivedChars[ndx] = '\0';  // terminate the string
-        ndx = 0;
-        received = true;
-        if(strncmp(measCommand, receivedChars, (strlen(measCommand)-1)) == 0){ // Compare command and received string (FS echoes the command)
-          result = 1;
-        }
-        else{
-          result = 9;             // return 9 if there is a mismatch
-        }
+      delay(delayPerCheck);
+  }
+
+  while (stream->available() > 0 && received == false && ndx <= numChars-1) {
+    delay(2);
+    rc = stream->read();
+    if (rc != endMarker && ndx < numChars-1) {
+      receivedChars[ndx] = rc;
+      ndx++;
+    }
+    else {
+      receivedChars[ndx] = '\0';  // terminate the string
+      ndx = 0;
+      received = true;
+      if(strncmp(measCommand, receivedChars, (strlen(measCommand)-1)) == 0){ // Compare command and received string (FS echoes the command)
+        result = 1;
+      }
+      else{
+        result = 9;             // return 9 if there is a mismatch
       }
     }
   }
+  //}
   return result;
 }
 
@@ -384,6 +404,7 @@ int Ardoxy::measureTemp(int serialDelay=300)
 long Ardoxy::readout(char command[])
 {                                       // receives serial data and stores it in array until endmarker is received
   long valInt;                                                                          // receives parsed numerical value
+  unsigned long startTime; // Used for timeout
 
   // Set source Stream
   stream = !hwStream? (Stream*)swStream : hwStream;
@@ -397,7 +418,17 @@ long Ardoxy::readout(char command[])
   stream->write(command);
   stream->flush();
   bool received = false;
-  delay(10);
+
+  // Wait for data with timeout mechanism
+  startTime = millis();
+  while (!stream->available()) {
+      if (millis() - startTime > 1000) {
+          valInt = 0; // Indicate a timeout error
+          return valInt;
+      }
+      delay(delayPerCheck);
+  }
+
   while (stream->available() > 0 && received == false && ndx <= numChars-1) {          // only read serial data if the buffer was emptied before and it's new data
     delay(2);
     rc = stream->read();
@@ -426,6 +457,7 @@ long Ardoxy::readout(char command[])
 long Ardoxy::readoutDO(int chan)
 {                                       // receives serial data and stores it in array until endmarker is received
   long valInt;                                                                          // receives parsed numerical value
+  unsigned long startTime; // Used for timeout
 
   // Set source Stream
   stream = !hwStream? (Stream*)swStream : hwStream;
@@ -442,7 +474,17 @@ long Ardoxy::readoutDO(int chan)
   stream->write(measCommand);
   stream->flush();
   bool received = false;
-  delay(10);
+
+  // Wait for data with timeout mechanism
+  startTime = millis();
+  while (!stream->available()) {
+      if (millis() - startTime > 1000) {
+          valInt = 0; // Indicate a timeout error
+          return valInt;
+      }
+      delay(delayPerCheck);
+  }
+
   while (stream->available() > 0 && received == false && ndx <= numChars-1) {          // only read serial data if the buffer was emptied before and it's new data
     delay(2);
     rc = stream->read();
@@ -471,6 +513,7 @@ long Ardoxy::readoutDO(int chan)
 long Ardoxy::readoutTemp()
 {                                       // receives serial data and stores it in array until endmarker is received
   long valInt;                                                                          // receives parsed numerical value
+  unsigned long startTime; // Used for timeout
 
   // Set source Stream
   stream = !hwStream? (Stream*)swStream : hwStream;
@@ -487,7 +530,17 @@ long Ardoxy::readoutTemp()
   stream->write(measCommand);
   stream->flush();
   bool received = false;
-  delay(10);
+
+  // Wait for data with timeout mechanism
+  startTime = millis();
+  while (!stream->available()) {
+      if (millis() - startTime > 1000) {
+          valInt = 0; // Indicate a timeout error
+          return valInt;
+      }
+      delay(delayPerCheck);
+  }
+
   while (stream->available() > 0 && received == false && ndx <= numChars-1) {          // only read serial data if the buffer was emptied before and it's new data
     delay(2);
     rc = stream->read();

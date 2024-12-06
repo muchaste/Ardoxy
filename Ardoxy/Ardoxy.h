@@ -19,10 +19,10 @@ class Ardoxy
     void begin();
     void end();
     int getVer();
-    int measure(char command[], int serialDelay=300);
-    int measureSeq(int chan, int serialDelay=500);
-    int measureDO(int chan, int serialDelay=100);
-    int measureTemp(int serialDelay=300);
+    int measure(char command[]);
+    int measureSeq(int chan);
+    int measureDO(int chan);
+    int measureTemp();
     long readout(char command[]);
     long readoutDO(int chan);
     long readoutTemp();
@@ -33,6 +33,7 @@ class Ardoxy
     SoftwareSerial* swStream;
     Stream* stream;
     int ver;
+    const int delayPerCheck = 2;
     int ndx = 0;                                                            // index for storing in the array
     char receivedChars[numChars];                                           // Array to hold incoming data
     char endMarker = '\r';                                                  // declare the character that marks the end of a serial transmission
