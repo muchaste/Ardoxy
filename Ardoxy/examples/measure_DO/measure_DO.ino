@@ -38,8 +38,6 @@ unsigned long sampInt = 2000;
 long DOInt, tempInt;                        // for measurement result
 double DOFloat, tempFloat;                  // measurement result as floating point number
 int check;                                  // numerical indicator of succesful measurement (1: success, 0: no connection, 9: mismatch)
-char DOReadCom[11] = "REA 1 3 4\r";         // template for DO-read command that is sent to sensor
-char tempReadCom[11] = "REA 1 3 5\r";       // template for temp-read command that is sent to sensor
 bool startTrigger = false;                  // trigger for start of measurement
 unsigned long loopStart, elapsed;           // ms timestamp of beginning and end of measurement loop
 
@@ -53,6 +51,7 @@ void setup() {
   delay(100);
   Serial.println("-------------- Ardoxy measure and plot example -------------");
   ardoxy.begin();
+  ardoxy.setTempComp(1);
   Serial.println("FireSting channel: 1");
   Serial.print("Measurement interval (ms): ");
   Serial.println(sampInt);
@@ -81,9 +80,9 @@ void loop() {
     // measure sequence
     check = ardoxy.measureSeq(1);
     if(check == 1){
-      DOInt = ardoxy.readout(DOReadCom);      // read DO value from results register
+      DOInt = ardoxy.readoutDO(1);      // read DO value from results register
       delay(20);
-      tempInt = ardoxy.readout(tempReadCom);  // read temperature value from results register
+      tempInt = ardoxy.readoutTemp();  // read temperature value from results register
       delay(20);
       DOFloat = DOInt / 1000.00;              // convert to floating point number
       tempFloat = tempInt / 1000.00;          // convert to floating point number
