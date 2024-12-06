@@ -7,95 +7,70 @@
 #include <Ardoxy.h>
 #include <SoftwareSerial.h>
 
-
+// Begin function to establish connection and set baud rate to 19200 if necessary
 void Ardoxy::begin()
 {
-  if (hwStream)
-  {
-    hwStream->begin(19200);
-    delay(3000);
-    while(hwStream->available()>0){
-      char t = hwStream->read();
-      delay(2);
-    }
-    hwStream->write("MSR 1\r");
-    delay(300);
-    if(hwStream->available()){
-      Serial.println("Hardware Serial Connection Established, Baudrate 19200");
-      while(hwStream->available()>0){
-        char t = hwStream->read();
-        delay(2);
-      }
-      ver = getVer();
-      Serial.print("Firmware Version: ");
-      Serial.println(ver);
-    } else {
-      hwStream->begin(115200);
-      delay(3000);
-      while(hwStream->available()>0){
-        char t = hwStream->read();
-        delay(2);
-      }
-      hwStream->write("MSR 1\r");
-      delay(300);
-      if(hwStream->available()){
-        Serial.println("Hardware Serial Connection Established, Baudrate 115200");
-        while(hwStream->available()>0){
-          char t = hwStream->read();
-          delay(2);
+    // Helper lambda to establish a connection
+    auto establishConnection = [this](Stream* serialStream, long baudRate) -> bool {
+        // Cast to specific serial type and initialize
+        if (serialStream == hwStream) {
+            static_cast<HardwareSerial*>(serialStream)->begin(baudRate);
+        } else if (serialStream == swStream) {
+            static_cast<SoftwareSerial*>(serialStream)->begin(baudRate);
+        } else {
+            return false; // Unknown stream type
         }
-        ver = getVer();
-        Serial.print("Firmware Version: ");
-        Serial.println(ver);
-      } else {
-        Serial.println("Couldn't establish connection");
-      }
-    }
-  }
-  else
-  {
-    swStream->begin(19200);
-    delay(3000);
-    while(swStream->available()>0){
-      char t = swStream->read();
-      delay(2);
-    }
-    swStream->write("MSR 1\r");
-    delay(300);
-    if(swStream->available()){
-      Serial.println("Software Serial Connection Established, Baudrate 19200");
-      while(swStream->available()>0){
-        char t = swStream->read();
-        delay(2);
-      }
-      ver = getVer();
-      Serial.print("Firmware Version: ");
-      Serial.println(ver);
-    } else {
-      swStream->begin(115200);
-      delay(3000);
-      while(swStream->available()>0){
-        char t = swStream->read();
-        delay(2);
-      }
-      swStream->write("MSR 1\r");
-      delay(300);
-      if(swStream->available()){
-        Serial.println("Software Serial Connection Established, Baudrate 115200");
-        while(swStream->available()>0){
-          char t = swStream->read();
-          delay(2);
-        }
-        ver = getVer();
-        Serial.print("Firmware Version: ");
-        Serial.println(ver);
-      } else {
-        Serial.println("Couldn't establish connection");
-      }
-    }
-  }
-}
 
+        delay(3000);
+
+        // Clear the serial buffer
+        while (serialStream->available() > 0) {
+            char t = serialStream->read();
+            delay(2);
+        }
+
+        // Send a test command
+        serialStream->write("MSR 1\r");
+        delay(300);
+
+        if (serialStream->available()) {
+            while (serialStream->available() > 0) {
+                char t = serialStream->read();
+                delay(2);
+            }
+            return true;
+        }
+        return false;
+    };
+
+    // Attempt connection at 19200
+    Stream* activeStream = hwStream ? (Stream*)hwStream : (Stream*)swStream;
+
+    if (establishConnection(activeStream, 19200)) {
+        Serial.println("Connection Established at Baudrate 19200");
+    } else if (establishConnection(activeStream, 115200)) {
+        Serial.println("Connection Established at Baudrate 115200");
+
+        // Send command to change baud rate to 19200
+        activeStream->write("#BAUD 19200\r");
+        delay(300);
+
+        // Reinitialize at 19200
+        if (!establishConnection(activeStream, 19200)) {
+            Serial.println("Failed to switch to Baudrate 19200");
+            return;
+        }
+        Serial.println("Baudrate successfully switched to 19200");
+    } else {
+        Serial.println("Failed to establish connection at any baudrate");
+        return;
+    }
+
+    // Retrieve firmware version
+    ver = getVer();
+    Serial.print("Firmware Version: ");
+    Serial.println(ver);
+}
 
 // End function
 void Ardoxy::end()
@@ -160,6 +135,61 @@ int Ardoxy::getVer()
   }
   return result;
 }
+
+int Ardoxy::setTempComp(int chan)
+{
+  int result;
+  unsigned long startTime; // Used for timeout
+
+  // Set source Stream
+  stream = !hwStream? (Stream*)swStream : hwStream;
+
+  // Empty Serial buffer
+  while(stream->available() > 0){
+    char t = stream->read();
+    delay(2);
+  }
+
+  // Send command to FireSting
+  sprintf(measCommand, "WRT %d 0 0 -300000\r", chan);           // insert channel in measurement command
+
+  stream->write(measCommand);
+  stream->flush();
+  bool received = false;      // Switch to continue reading incoming data until end marker was received
+
+  // Wait for data with timeout mechanism
+  startTime = millis();
+  while (!stream->available()) {
+      if (millis() - startTime > 1000) {
+          result = 0; // Indicate a timeout error
+          return result;
+      }
+      delay(delayPerCheck);
+  }
+
+  while (stream->available() > 0 && received == false && ndx <= numChars-1) {
+    delay(2);
+    rc = stream->read();
+    if (rc != endMarker && ndx < numChars-1) {
+      receivedChars[ndx] = rc;
+      ndx++;
+    }
+    else {
+      receivedChars[ndx] = '\0';  // terminate the string
+      ndx = 0;
+      received = true;
+      if(strncmp(measCommand, receivedChars, (strlen(measCommand)-1)) == 0){ // Compare command and received string (FS echoes the command)
+        Serial.println("Compensation for sample temperature activated.");
+        result = 1;
+      }
+      else{
+        result = 9;             // return 9 if there is a mismatch
+      }
+    }
+  }
+  return result;
+}
+
 
 // Measure function: send measurement command to firesting via Serial communication
 // Returns:

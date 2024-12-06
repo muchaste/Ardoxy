@@ -19,6 +19,7 @@ class Ardoxy
     void begin();
     void end();
     int getVer();
+    int setTempComp(int channel);
     int measure(char command[]);
     int measureSeq(int chan);
     int measureDO(int chan);
@@ -38,7 +39,7 @@ class Ardoxy
     char receivedChars[numChars];                                           // Array to hold incoming data
     char endMarker = '\r';                                                  // declare the character that marks the end of a serial transmission
     char rc;                                                                // temporary variable to hold the last received character
-    char measCommand[13];                                                   // Buffer for measurement command
+    char measCommand[20];                                                   // Buffer for measurement command
 };
 
 #endif
