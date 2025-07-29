@@ -40,6 +40,14 @@ class Ardoxy
     char endMarker = '\r';                                                  // declare the character that marks the end of a serial transmission
     char rc;                                                                // temporary variable to hold the last received character
     char measCommand[20];                                                   // Buffer for measurement command
+    
+    // Core communication methods
+    enum class ResponseType { ECHO_ONLY, VALUE_EXTRACTION };
+    int sendCommandForEcho(const char* command);
+    long sendCommandForValue(const char* command);
+    void clearSerialBuffer();
+    void setActiveStream();
+    bool waitForResponse(unsigned long timeoutMs = 1000);
 };
 
 #endif

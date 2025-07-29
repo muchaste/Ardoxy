@@ -88,86 +88,20 @@ void Ardoxy::end()
 // Function to read the firmware version from the device
 int Ardoxy::getVer()
 {
-  int result;
-  // Set source Stream
-  stream = !hwStream? (Stream*)swStream : hwStream;
-
-  // Empty Serial buffer
-  while(stream->available() > 0){
-    char t = stream->read();
-    delay(2);
-  }
+  setActiveStream();
+  clearSerialBuffer();
 
   // Send command to FireSting
   stream->write("#VERS\r");
   stream->flush();
-  bool received = false;      // Switch to continue reading incoming data until end marker was received
-  delay(170);         // Let Firesting finish measurement before reading incoming serial data
+  delay(170); // Let FireSting finish before reading incoming serial data
 
-  if(!stream->available()){ // If there is no incoming data, there is a connection problem
-    result = 0;
-  }
-  else{
-    while (stream->available() > 0 && received == false && ndx <= numChars-1) {
-      delay(2);
-      rc = stream->read();
-      if (rc != endMarker && ndx < numChars-1) {
-        receivedChars[ndx] = rc;
-        ndx++;
-      }
-      else {
-        receivedChars[ndx] = '\0';  // terminate the string
-        ndx = 0;
-        received = true;
-        if(strncmp("#VERS", receivedChars, (strlen("#VERS")-1)) == 0){ // Compare command and received string (FS echoes the command)
-          // get the 4th value of the return string (values separated by spaces)
-          char *verChar = strtok(receivedChars, " ");
-          for(int i = 0; i < 3; i++){
-            verChar=strtok(NULL, " ");
-          }
-          result = atol(verChar);                         // parse the character to integers - the air saturation values are returned as [% air saturation x 1000], temperature as [°C x 1000]
-        }
-        else{
-          result = 9;             // return 9 if there is a mismatch
-        }
-      }
-    }
-  }
-  return result;
-}
-
-int Ardoxy::setTempComp(int chan)
-{
-  int result;
-  unsigned long startTime; // Used for timeout
-
-  // Set source Stream
-  stream = !hwStream? (Stream*)swStream : hwStream;
-
-  // Empty Serial buffer
-  while(stream->available() > 0){
-    char t = stream->read();
-    delay(2);
+  if(!stream->available()){ 
+    return 0; // No incoming data, connection problem
   }
 
-  // Send command to FireSting
-  sprintf(measCommand, "WRT %d 0 0 -300000\r", chan);           // insert channel in measurement command
-
-  stream->write(measCommand);
-  stream->flush();
-  bool received = false;      // Switch to continue reading incoming data until end marker was received
-
-  // Wait for data with timeout mechanism
-  startTime = millis();
-  while (!stream->available()) {
-      if (millis() - startTime > 1000) {
-          result = 0; // Indicate a timeout error
-          return result;
-      }
-      delay(delayPerCheck);
-  }
-
-  while (stream->available() > 0 && received == false && ndx <= numChars-1) {
+  bool received = false;
+  while (stream->available() > 0 && !received && ndx <= numChars-1) {
     delay(2);
     rc = stream->read();
     if (rc != endMarker && ndx < numChars-1) {
@@ -178,15 +112,129 @@ int Ardoxy::setTempComp(int chan)
       receivedChars[ndx] = '\0';  // terminate the string
       ndx = 0;
       received = true;
-      if(strncmp(measCommand, receivedChars, (strlen(measCommand)-1)) == 0){ // Compare command and received string (FS echoes the command)
-        Serial.println("Compensation for sample temperature activated.");
-        result = 1;
+      if(strncmp("#VERS", receivedChars, (strlen("#VERS")-1)) == 0){ 
+        // get the 4th value of the return string (values separated by spaces)
+        char *verChar = strtok(receivedChars, " ");
+        for(int i = 0; i < 3; i++){
+          verChar=strtok(NULL, " ");
+        }
+        return atol(verChar);
       }
       else{
-        result = 9;             // return 9 if there is a mismatch
+        return 9; // Mismatch
       }
     }
   }
+  return 0;
+}
+
+// Core communication helper methods
+void Ardoxy::clearSerialBuffer()
+{
+  while(stream->available() > 0){
+    char t = stream->read();
+    delay(2);
+  }
+}
+
+void Ardoxy::setActiveStream()
+{
+  stream = !hwStream? (Stream*)swStream : hwStream;
+}
+
+bool Ardoxy::waitForResponse(unsigned long timeoutMs)
+{
+  unsigned long startTime = millis();
+  while (!stream->available()) {
+    if (millis() - startTime > timeoutMs) {
+      return false; // Timeout
+    }
+    delay(delayPerCheck);
+  }
+  return true;
+}
+
+int Ardoxy::sendCommandForEcho(const char* command)
+{
+  setActiveStream();
+  clearSerialBuffer();
+  
+  // Send command to FireSting
+  stream->write(command);
+  stream->flush();
+  
+  if (!waitForResponse()) {
+    return 0; // Timeout error
+  }
+  
+  bool received = false;
+  while (stream->available() > 0 && !received && ndx <= numChars-1) {
+    delay(2);
+    rc = stream->read();
+    if (rc != endMarker && ndx < numChars-1) {
+      receivedChars[ndx] = rc;
+      ndx++;
+    }
+    else {
+      receivedChars[ndx] = '\0';  // terminate the string
+      ndx = 0;
+      received = true;
+      if(strncmp(command, receivedChars, (strlen(command)-1)) == 0){ 
+        return 1; // Echo matches command
+      }
+      else{
+        return 9; // Mismatch
+      }
+    }
+  }
+  return 9; // Should not reach here
+}
+
+long Ardoxy::sendCommandForValue(const char* command)
+{
+  setActiveStream();
+  clearSerialBuffer();
+  
+  stream->write(command);
+  stream->flush();
+  
+  if (!waitForResponse()) {
+    return 0; // Timeout error
+  }
+  
+  bool received = false;
+  while (stream->available() > 0 && !received && ndx <= numChars-1) {
+    delay(2);
+    rc = stream->read();
+    if (rc != endMarker && ndx < numChars-1) {
+      receivedChars[ndx] = rc;
+      ndx++;
+    }
+    else {
+      receivedChars[ndx] = '\0';
+      ndx = 0;
+      if(strncmp(command, receivedChars, (strlen(command)-1)) == 0){
+        received = true;
+        char* separator = strrchr(receivedChars, ' ');
+        return atol(separator);
+      }
+      else{
+        return 0; // Mismatch
+      }
+    }
+  }
+  return 0;
+}
+
+int Ardoxy::setTempComp(int chan)
+{
+  sprintf(measCommand, "WRT %d 0 0 -300000\r", chan);
+  int result = sendCommandForEcho(measCommand);
+  
+  if (result == 1) {
+    Serial.println("Compensation for sample temperature activated.");
+  }
+  
   return result;
 }
 
@@ -196,235 +244,46 @@ int Ardoxy::setTempComp(int chan)
 // 1 when echo matches command
 // 0 when there is no echo (connection problem)
 // 9 when there is a mismatch (usually due to timing or connection issues)
-int Ardoxy::measure(char command[])//, int serialDelay=300)
+int Ardoxy::measure(char command[])
 {
-  int result;
-  unsigned long startTime; // Used for timeout
-
-  // Set source Stream
-  stream = !hwStream? (Stream*)swStream : hwStream;
-
-  // Empty Serial buffer
-  while(stream->available() > 0){
-    char t = stream->read();
-    delay(2);
-  }
-
-  // Send command to FireSting
-  stream->write(command);
-  stream->flush();
-  bool received = false;      // Switch to continue reading incoming data until end marker was received
-
-  // Wait for data with timeout mechanism
-  startTime = millis();
-  while (!stream->available()) {
-      if (millis() - startTime > 1000) {
-          result = 0; // Indicate a timeout error
-          return result;
-      }
-      delay(delayPerCheck);
-  }
-
-  while (stream->available() > 0 && received == false && ndx <= numChars-1) {
-    delay(2);
-    rc = stream->read();
-    if (rc != endMarker && ndx < numChars-1) {
-      receivedChars[ndx] = rc;
-      ndx++;
-    }
-    else {
-      receivedChars[ndx] = '\0';  // terminate the string
-      ndx = 0;
-      received = true;
-      if(strncmp(command, receivedChars, (strlen(command)-1)) == 0){ // Compare command and received string (FS echoes the command)
-        result = 1;
-      }
-      else{
-        result = 9;             // return 9 if there is a mismatch
-      }
-    }
-  }
-  return result;
+  return sendCommandForEcho(command);
 }
 
 // Measure Sequence function: same as measure function but with pre-set measurement command
-int Ardoxy::measureSeq(int chan)//, int serialDelay=700)
+int Ardoxy::measureSeq(int chan)
 {
-  int result;
-  unsigned long startTime; // Used for timeout
-
-  // Paste Channel in measurement command
   if(ver >= 400){
-    sprintf(measCommand, "MEA %d 47\r", chan);           // insert channel in measurement command
-  } else if (ver < 400) {
-    sprintf(measCommand, "SEQ %d\r", chan);           // insert channel in measurement command
+    sprintf(measCommand, "MEA %d 47\r", chan);
+  } else {
+    sprintf(measCommand, "SEQ %d\r", chan);
   }
-
-  // Set source Stream
-  stream = !hwStream? (Stream*)swStream : hwStream;
-
-  // Empty Serial buffer
-  while(stream->available() > 0){
-    char t = stream->read();
-    delay(2);
-  }
-
-  // Send command to FireSting
-  stream->write(measCommand);
-  stream->flush();
-  bool received = false;      // Switch to continue reading incoming data until end marker was received
-
-  // Wait for data with timeout mechanism
-  startTime = millis();
-  while (!stream->available()) {
-      if (millis() - startTime > 1000) {
-          result = 0; // Indicate a timeout error
-          return result;
-      }
-      delay(delayPerCheck);
-  }
-
-  while (stream->available() > 0 && received == false && ndx <= numChars-1) {
-    delay(2);
-    rc = stream->read();
-    if (rc != endMarker && ndx < numChars-1) {
-      receivedChars[ndx] = rc;
-      ndx++;
-    }
-    else {
-      receivedChars[ndx] = '\0';  // terminate the string
-      ndx = 0;
-      received = true;
-      if(strncmp(measCommand, receivedChars, (strlen(measCommand)-1)) == 0){ // Compare command and received string (FS echoes the command)
-        result = 1;
-      }
-      else{
-        result = 9;             // return 9 if there is a mismatch
-      }
-    }
-  }
-  return result;
+  
+  return sendCommandForEcho(measCommand);
 }
 
 // Measure DO function: same as measure function but with pre-set measurement command
-int Ardoxy::measureDO(int chan)//, int serialDelay=100)
+int Ardoxy::measureDO(int chan)
 {
-  int result;
-  unsigned long startTime; // Used for timeout
-
-  // Paste Channel in measurement command
   if(ver >= 400){
-    sprintf(measCommand, "MEA %d 1\r", chan);           // insert channel in measurement command
-  } else if (ver < 400) {
-    sprintf(measCommand, "MSR %d\r", chan);           // insert channel in measurement command
+    sprintf(measCommand, "MEA %d 1\r", chan);
+  } else {
+    sprintf(measCommand, "MSR %d\r", chan);
   }
-
-
-  // Set source Stream
-  stream = !hwStream? (Stream*)swStream : hwStream;
-
-  // Empty Serial buffer
-  while(stream->available() > 0){
-    char t = stream->read();
-    delay(2);
-  }
-
-  // Send command to FireSting
-  stream->write(measCommand);
-  stream->flush();
-  bool received = false;      // Switch to continue reading incoming data until end marker was received
-
-  // Wait for data with timeout mechanism
-  startTime = millis();
-  while (!stream->available()) {
-      if (millis() - startTime > 1000) {
-          result = 0; // Indicate a timeout error
-          return result;
-      }
-      delay(delayPerCheck);
-  }
-
-  while (stream->available() > 0 && received == false && ndx <= numChars-1) {
-    delay(2);
-    rc = stream->read();
-    if (rc != endMarker && ndx < numChars-1) {
-      receivedChars[ndx] = rc;
-      ndx++;
-    }
-    else {
-      receivedChars[ndx] = '\0';  // terminate the string
-      ndx = 0;
-      received = true;
-      if(strncmp(measCommand, receivedChars, (strlen(measCommand)-1)) == 0){ // Compare command and received string (FS echoes the command)
-        result = 1;
-      }
-      else{
-        result = 9;             // return 9 if there is a mismatch
-      }
-    }
-  }
-  return result;
+  
+  return sendCommandForEcho(measCommand);
 }
 
-// Measure DO function: same as measure function but with pre-set measurement command
-int Ardoxy::measureTemp()//int serialDelay=300)
+// Measure Temperature function: same as measure function but with pre-set measurement command
+int Ardoxy::measureTemp()
 {
-  int result;
   int chan = 1;
-  unsigned long startTime; // Used for timeout
-
-  // Paste Channel in measurement command
   if(ver >= 400){
-    sprintf(measCommand, "MEA %d 2\r", chan);           // insert channel in measurement command
-  } else if (ver < 400) {
-    sprintf(measCommand, "TMP %d\r", chan);           // insert channel in measurement command
+    sprintf(measCommand, "MEA %d 2\r", chan);
+  } else {
+    sprintf(measCommand, "TMP %d\r", chan);
   }
-
-  // Set source Stream
-  stream = !hwStream? (Stream*)swStream : hwStream;
-
-  // Empty Serial buffer
-  while(stream->available() > 0){
-    char t = stream->read();
-    delay(2);
-  }
-
-  // Send command to FireSting
-  stream->write(measCommand);
-  stream->flush();
-  bool received = false;      // Switch to continue reading incoming data until end marker was received
-
-  // Wait for data with timeout mechanism
-  startTime = millis();
-  while (!stream->available()) {
-      if (millis() - startTime > 1000) {
-          result = 0; // Indicate a timeout error
-          return result;
-      }
-      delay(delayPerCheck);
-  }
-
-  while (stream->available() > 0 && received == false && ndx <= numChars-1) {
-    delay(2);
-    rc = stream->read();
-    if (rc != endMarker && ndx < numChars-1) {
-      receivedChars[ndx] = rc;
-      ndx++;
-    }
-    else {
-      receivedChars[ndx] = '\0';  // terminate the string
-      ndx = 0;
-      received = true;
-      if(strncmp(measCommand, receivedChars, (strlen(measCommand)-1)) == 0){ // Compare command and received string (FS echoes the command)
-        result = 1;
-      }
-      else{
-        result = 9;             // return 9 if there is a mismatch
-      }
-    }
-  }
-  //}
-  return result;
+  
+  return sendCommandForEcho(measCommand);
 }
 
 // Readout values from Firesting memory
@@ -432,167 +291,22 @@ int Ardoxy::measureTemp()//int serialDelay=300)
 // numerical value (air saturation or temperature) - refer to Firesting Protocol
 // 0 if there is a communication mismatch
 long Ardoxy::readout(char command[])
-{                                       // receives serial data and stores it in array until endmarker is received
-  long valInt;                                                                          // receives parsed numerical value
-  unsigned long startTime; // Used for timeout
-
-  // Set source Stream
-  stream = !hwStream? (Stream*)swStream : hwStream;
-
-  // Empty Serial buffer
-  while(stream->available() > 0){
-    char t = stream->read();
-    delay(2);
-  }
-
-  stream->write(command);
-  stream->flush();
-  bool received = false;
-
-  // Wait for data with timeout mechanism
-  startTime = millis();
-  while (!stream->available()) {
-      if (millis() - startTime > 1000) {
-          valInt = 0; // Indicate a timeout error
-          return valInt;
-      }
-      delay(delayPerCheck);
-  }
-
-  while (stream->available() > 0 && received == false && ndx <= numChars-1) {          // only read serial data if the buffer was emptied before and it's new data
-    delay(2);
-    rc = stream->read();
-    if (rc != endMarker && ndx < numChars-1) {
-      receivedChars[ndx] = rc;                                                        // store the latest character in character array
-      ndx++;
-    }
-    else {
-      receivedChars[ndx] = '\0';                                                      // terminate the string if the end marker is received
-      ndx = 0;
-      if(strncmp(command, receivedChars, (strlen(command)-1)) == 0){
-        received = true;
-        char* separator = strrchr(receivedChars, ' ');    // the value is separated by a space -> strrchr finds the last occurrence of " " in receivedChars and points
-                                                          // to the following part of the string
-        valInt = atol(separator);                         // parse the character to integers - the air saturation values are returned as [% air saturation x 1000], temperature as [°C x 1000]
-      }
-      else{
-        valInt = 0;
-      }
-    }
-  }
-  return valInt;
+{
+  return sendCommandForValue(command);
 }
 
 // readoutDO - Similar to readout function but with pre-set DO-readout command
 long Ardoxy::readoutDO(int chan)
-{                                       // receives serial data and stores it in array until endmarker is received
-  long valInt;                                                                          // receives parsed numerical value
-  unsigned long startTime; // Used for timeout
-
-  // Set source Stream
-  stream = !hwStream? (Stream*)swStream : hwStream;
-
-  // Empty Serial buffer
-  while(stream->available() > 0){
-    char t = stream->read();
-    delay(2);
-  }
-
-  // Paste Channel in measurement command
-  sprintf(measCommand, "RMR %d 3 4 1\r", chan);           // insert channel in measurement command
-
-  stream->write(measCommand);
-  stream->flush();
-  bool received = false;
-
-  // Wait for data with timeout mechanism
-  startTime = millis();
-  while (!stream->available()) {
-      if (millis() - startTime > 1000) {
-          valInt = 0; // Indicate a timeout error
-          return valInt;
-      }
-      delay(delayPerCheck);
-  }
-
-  while (stream->available() > 0 && received == false && ndx <= numChars-1) {          // only read serial data if the buffer was emptied before and it's new data
-    delay(2);
-    rc = stream->read();
-    if (rc != endMarker && ndx < numChars-1) {
-      receivedChars[ndx] = rc;                                                        // store the latest character in character array
-      ndx++;
-    }
-    else {
-      receivedChars[ndx] = '\0';                                                      // terminate the string if the end marker is received
-      ndx = 0;
-      if(strncmp(measCommand, receivedChars, (strlen(measCommand)-1)) == 0){
-        received = true;
-        char* separator = strrchr(receivedChars, ' ');    // the value is separated by a space -> strrchr finds the last occurrence of " " in receivedChars and points
-                                                          // to the following part of the string
-        valInt = atol(separator);                         // parse the character to integers - the air saturation values are returned as [% air saturation x 1000], temperature as [°C x 1000]
-      }
-      else{
-        valInt = 0;
-      }
-    }
-  }
-  return valInt;
+{
+  sprintf(measCommand, "RMR %d 3 4 1\r", chan);
+  return sendCommandForValue(measCommand);
 }
 
-// readoutDO - Similar to readout function but with pre-set DO-readout command
+// readoutTemp - Similar to readout function but with pre-set temperature-readout command
 long Ardoxy::readoutTemp()
-{                                       // receives serial data and stores it in array until endmarker is received
-  long valInt;                                                                          // receives parsed numerical value
-  unsigned long startTime; // Used for timeout
-
-  // Set source Stream
-  stream = !hwStream? (Stream*)swStream : hwStream;
-
-  // Empty Serial buffer
-  while(stream->available() > 0){
-    char t = stream->read();
-    delay(2);
-  }
-
-  // Paste Channel in measurement command
-  sprintf(measCommand, "RMR 1 3 5 1\r");           // insert channel in measurement command
-
-  stream->write(measCommand);
-  stream->flush();
-  bool received = false;
-
-  // Wait for data with timeout mechanism
-  startTime = millis();
-  while (!stream->available()) {
-      if (millis() - startTime > 1000) {
-          valInt = 0; // Indicate a timeout error
-          return valInt;
-      }
-      delay(delayPerCheck);
-  }
-
-  while (stream->available() > 0 && received == false && ndx <= numChars-1) {          // only read serial data if the buffer was emptied before and it's new data
-    delay(2);
-    rc = stream->read();
-    if (rc != endMarker && ndx < numChars-1) {
-      receivedChars[ndx] = rc;                                                        // store the latest character in character array
-      ndx++;
-    }
-    else {
-      receivedChars[ndx] = '\0';                                                      // terminate the string if the end marker is received
-      ndx = 0;
-      if(strncmp(measCommand, receivedChars, (strlen(measCommand)-1)) == 0){
-        received = true;
-        char* separator = strrchr(receivedChars, ' ');    // the value is separated by a space -> strrchr finds the last occurrence of " " in receivedChars and points
-                                                          // to the following part of the string
-        valInt = atol(separator);                         // parse the character to integers - the air saturation values are returned as [% air saturation x 1000], temperature as [°C x 1000]
-      }
-      else{
-        valInt = 0;
-      }
-    }
-  }
-  return valInt;
+{
+  sprintf(measCommand, "RMR 1 3 5 1\r");
+  return sendCommandForValue(measCommand);
 }
 
 // Calculate duration in days between two given dates
