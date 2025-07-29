@@ -10,58 +10,26 @@
 // Begin function to establish connection and set baud rate to 19200 if necessary
 void Ardoxy::begin()
 {
-    // Helper lambda to establish a connection
-    auto establishConnection = [this](Stream* serialStream, long baudRate) -> bool {
-        // Cast to specific serial type and initialize
-        if (serialStream == hwStream) {
-            static_cast<HardwareSerial*>(serialStream)->begin(baudRate);
-        } else if (serialStream == swStream) {
-            static_cast<SoftwareSerial*>(serialStream)->begin(baudRate);
-        } else {
-            return false; // Unknown stream type
-        }
-
-        delay(3000);
-
-        // Clear the serial buffer
-        while (serialStream->available() > 0) {
-            char t = serialStream->read();
-            delay(2);
-        }
-
-        // Send a test command
-        serialStream->write("MSR 1\r");
-        delay(300);
-
-        if (serialStream->available()) {
-            while (serialStream->available() > 0) {
-                char t = serialStream->read();
-                delay(2);
-            }
-            return true;
-        }
-        return false;
-    };
-
     // Attempt connection at 19200
-    Stream* activeStream = hwStream ? (Stream*)hwStream : (Stream*)swStream;
-
-    if (establishConnection(activeStream, 19200)) {
+    if (establishConnection(19200)) {
         Serial.println("Connection Established at Baudrate 19200");
-    } else if (establishConnection(activeStream, 115200)) {
+    } 
+    else if (establishConnection(115200)) {
         Serial.println("Connection Established at Baudrate 115200");
 
         // Send command to change baud rate to 19200
-        activeStream->write("#BAUD 19200\r");
+        setActiveStream();
+        stream->write("#BAUD 19200\r");
         delay(300);
 
         // Reinitialize at 19200
-        if (!establishConnection(activeStream, 19200)) {
+        if (!establishConnection(19200)) {
             Serial.println("Failed to switch to Baudrate 19200");
             return;
         }
         Serial.println("Baudrate successfully switched to 19200");
-    } else {
+    } 
+    else {
         Serial.println("Failed to establish connection at any baudrate");
         return;
     }
@@ -88,44 +56,7 @@ void Ardoxy::end()
 // Function to read the firmware version from the device
 int Ardoxy::getVer()
 {
-  setActiveStream();
-  clearSerialBuffer();
-
-  // Send command to FireSting
-  stream->write("#VERS\r");
-  stream->flush();
-  delay(170); // Let FireSting finish before reading incoming serial data
-
-  if(!stream->available()){ 
-    return 0; // No incoming data, connection problem
-  }
-
-  bool received = false;
-  while (stream->available() > 0 && !received && ndx <= numChars-1) {
-    delay(2);
-    rc = stream->read();
-    if (rc != endMarker && ndx < numChars-1) {
-      receivedChars[ndx] = rc;
-      ndx++;
-    }
-    else {
-      receivedChars[ndx] = '\0';  // terminate the string
-      ndx = 0;
-      received = true;
-      if(strncmp("#VERS", receivedChars, (strlen("#VERS")-1)) == 0){ 
-        // get the 4th value of the return string (values separated by spaces)
-        char *verChar = strtok(receivedChars, " ");
-        for(int i = 0; i < 3; i++){
-          verChar=strtok(NULL, " ");
-        }
-        return atol(verChar);
-      }
-      else{
-        return 9; // Mismatch
-      }
-    }
-  }
-  return 0;
+  return (int)sendCommandForTokenValue("#VERS\r", 3, 170); // 4th token (index 3) with 170ms delay
 }
 
 // Core communication helper methods
@@ -224,6 +155,88 @@ long Ardoxy::sendCommandForValue(const char* command)
     }
   }
   return 0;
+}
+
+long Ardoxy::sendCommandForTokenValue(const char* command, int tokenIndex, unsigned long delayMs)
+{
+  setActiveStream();
+  clearSerialBuffer();
+  
+  stream->write(command);
+  stream->flush();
+  
+  if (delayMs > 0) {
+    delay(delayMs); // For commands that need processing time
+  }
+  
+  if (!stream->available() && delayMs > 0) {
+    // For delayed commands, check availability after delay
+    if (!waitForResponse()) {
+      return 0; // Timeout error
+    }
+  } else if (!waitForResponse()) {
+    return 0; // Timeout error
+  }
+  
+  bool received = false;
+  while (stream->available() > 0 && !received && ndx <= numChars-1) {
+    delay(2);
+    rc = stream->read();
+    if (rc != endMarker && ndx < numChars-1) {
+      receivedChars[ndx] = rc;
+      ndx++;
+    }
+    else {
+      receivedChars[ndx] = '\0';
+      ndx = 0;
+      if(strncmp(command, receivedChars, (strlen(command)-1)) == 0){
+        received = true;
+        // Parse the specified token
+        char *token = strtok(receivedChars, " ");
+        for(int i = 0; i < tokenIndex && token != NULL; i++){
+          token = strtok(NULL, " ");
+        }
+        return token ? atol(token) : 0;
+      }
+      else{
+        return 0; // Mismatch
+      }
+    }
+  }
+  return 0;
+}
+
+bool Ardoxy::establishConnection(long baudRate)
+{
+  Stream* activeStream = hwStream ? (Stream*)hwStream : (Stream*)swStream;
+  
+  // Cast to specific serial type and initialize
+  if (activeStream == hwStream) {
+    static_cast<HardwareSerial*>(activeStream)->begin(baudRate);
+  } else if (activeStream == swStream) {
+    static_cast<SoftwareSerial*>(activeStream)->begin(baudRate);
+  } else {
+    return false; // Unknown stream type
+  }
+
+  delay(3000);
+  return testConnection();
+}
+
+bool Ardoxy::testConnection()
+{
+  setActiveStream();
+  clearSerialBuffer();
+  
+  // Send a test command
+  stream->write("MSR 1\r");
+  delay(300);
+
+  if (stream->available()) {
+    clearSerialBuffer(); // Clear response
+    return true;
+  }
+  return false;
 }
 
 int Ardoxy::setTempComp(int chan)

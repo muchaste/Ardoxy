@@ -45,9 +45,12 @@ class Ardoxy
     enum class ResponseType { ECHO_ONLY, VALUE_EXTRACTION };
     int sendCommandForEcho(const char* command);
     long sendCommandForValue(const char* command);
+    long sendCommandForTokenValue(const char* command, int tokenIndex, unsigned long delayMs = 0);
     void clearSerialBuffer();
     void setActiveStream();
     bool waitForResponse(unsigned long timeoutMs = 1000);
+    bool establishConnection(long baudRate);
+    bool testConnection();
 };
 
 #endif
