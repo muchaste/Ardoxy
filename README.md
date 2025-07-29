@@ -36,15 +36,15 @@ This project is under development.
 5. Connect the Arduino to the meter as described in the example sketch and upload the sketch to the Arduino. Follow measurements using, e.g., the Serial Monitor.
 
 ### Example 1: measure_DO
-This example sketch sends temperature and DO measurements via serial to the PC. To plot these values, [download SerialPlot](https://hackaday.io/project/5334-serialplot-realtime-plotting-software) and load the settings file from this repo ([link](./SerialPlotter%20config%20measure%20and%20plot.ini). This great piece of software allows you to send commands (to trigger the start of measurements) and to visualize and log values.
-![Measure_DO_example](./images/measure_DO_screencapture.gif)
+This example sketch sends temperature and DO measurements via serial to the PC. To plot these values, [download SerialPlot](https://hackaday.io/project/5334-serialplot-realtime-plotting-software) and load the settings file from this repo ([link](./utils/SerialPlotter%20config%20measure%20and%20plot.ini). This great piece of software allows you to send commands (to trigger the start of measurements) and to visualize and log values.
+![Measure_DO_example](./docs/measure_DO_screencapture.gif)
 
 ### Example 2: setpoint_solenoid
 This example sketch controls DO via solenoid valves that are connected to a relay module. The measured values are sent to the computer via serial connection and can be plotted (as above) or logged, e.g., using [ExtraPuTTY](https://sourceforge.net/projects/extraputty/). The Arduino opens the valves to allow gas flow (nitrogen or air/oxygen) to regulate DO to a defined setpoint for a defined duration.
 
 ### Python Sketch Builder
-The [Python Sketch Builder](./Python%20programs/Single%20Setpoint%20Sketch%20Builder.py) is a simple program with a graphical user interface that lets users set the most important parameters for single-setpoint (static) DO control programs and create an Arduino sketch for upload.
-![Python_Sketch_Builder](./images/Sketch%20Builder%20GUI.png)
+The [Python Sketch Builder](./utils/Single%20Setpoint%20Sketch%20Builder.py) is a simple program with a graphical user interface that lets users set the most important parameters for single-setpoint (static) DO control programs and create an Arduino sketch for upload.
+![Python_Sketch_Builder](./docs/Sketch%20Builder%20GUI.png)
 
 
 ## Background
@@ -106,7 +106,7 @@ Mass-flow controllers (MFCs) are the first and obvious choice to control gas flo
 However, we have some old MKS mass-flow controllers lying around here. They need a +- 15V power supply and can be controlled with an analog 0-5V input. First tests with these MFCs are very promising and I will supply more information on how to control DO with Ardoxy and MFCs in the future
 
 ### Overview
-![Overview](./images/simple_overview.png)
+![Overview](./docs/simple_overview.png)
 As mentioned above, the arduino sends to and receives from the sensor via its serial port. The relays are triggered via digital outputs and all is powered by separate power supplies. Also, as this remains untested at the moment, the temperature sensors are not included in this overview
 
 ## Oxygen Control V1
