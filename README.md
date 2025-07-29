@@ -25,8 +25,6 @@ This project is under development.
       * [Solenoid Valves](#solenoid-valves)
       * [Mass-Flow Controllers](#mass-flow-controllers)
   * [Overview](#overview)
-* [Oxygen Control V1](#oxygen-control-v1)
-  * [The Code](#the-code)
 
 ## Quick Start
 1. Gather components: the bare minimum are an Arduino (Uno or Mega), a FireSting oxygen meter with sensors, jumper cables and a 7-Pin connector (I use the [Phoenix contact PTSM 0,5/ 7-P-2,5 - 1778887](https://www.phoenixcontact.com/en-ca/products/pcb-plug-ptsm-05-7-p-25-1778887)).
@@ -36,15 +34,15 @@ This project is under development.
 5. Connect the Arduino to the meter as described in the example sketch and upload the sketch to the Arduino. Follow measurements using, e.g., the Serial Monitor.
 
 ### Example 1: measure_DO
-This example sketch sends temperature and DO measurements via serial to the PC. To plot these values, [download SerialPlot](https://hackaday.io/project/5334-serialplot-realtime-plotting-software) and load the settings file from this repo ([link](./SerialPlotter%20config%20measure%20and%20plot.ini). This great piece of software allows you to send commands (to trigger the start of measurements) and to visualize and log values.
-![Measure_DO_example](./images/measure_DO_screencapture.gif)
+This example sketch sends temperature and DO measurements via serial to the PC. To plot these values, [download SerialPlot](https://hackaday.io/project/5334-serialplot-realtime-plotting-software) and load the settings file from this repo ([link](./utils/SerialPlotter%20config%20measure%20and%20plot.ini). This great piece of software allows you to send commands (to trigger the start of measurements) and to visualize and log values.
+![Measure_DO_example](./docs/measure_DO_screencapture.gif)
 
 ### Example 2: setpoint_solenoid
 This example sketch controls DO via solenoid valves that are connected to a relay module. The measured values are sent to the computer via serial connection and can be plotted (as above) or logged, e.g., using [ExtraPuTTY](https://sourceforge.net/projects/extraputty/). The Arduino opens the valves to allow gas flow (nitrogen or air/oxygen) to regulate DO to a defined setpoint for a defined duration.
 
 ### Python Sketch Builder
-The [Python Sketch Builder](./Python%20programs/Single%20Setpoint%20Sketch%20Builder.py) is a simple program with a graphical user interface that lets users set the most important parameters for single-setpoint (static) DO control programs and create an Arduino sketch for upload.
-![Python_Sketch_Builder](./images/Sketch%20Builder%20GUI.png)
+The [Python Sketch Builder](./utils/Single%20Setpoint%20Sketch%20Builder.py) is a simple program with a graphical user interface that lets users set the most important parameters for single-setpoint (static) DO control programs and create an Arduino sketch for upload.
+![Python_Sketch_Builder](./docs/Sketch%20Builder%20GUI.png)
 
 
 ## Background
@@ -106,21 +104,5 @@ Mass-flow controllers (MFCs) are the first and obvious choice to control gas flo
 However, we have some old MKS mass-flow controllers lying around here. They need a +- 15V power supply and can be controlled with an analog 0-5V input. First tests with these MFCs are very promising and I will supply more information on how to control DO with Ardoxy and MFCs in the future
 
 ### Overview
-![Overview](./images/simple_overview.png)
+![Overview](./docs/simple_overview.png)
 As mentioned above, the arduino sends to and receives from the sensor via its serial port. The relays are triggered via digital outputs and all is powered by separate power supplies. Also, as this remains untested at the moment, the temperature sensors are not included in this overview
-
-## Oxygen Control V1
-This system was tested in an 8-week hypoxia acclimation experiment. It is designed to measure and control DO in eight tanks. The sketch is now in the "old_sketches" directory
-Here's a list of the components of the last tested configuration for an 8-channel system:
-* 1 Arduino MEGA 2560
-* 1 Adafruit Datalogger Shield (ID1141)
-* 1 Adafruit LCD display (ID714)
-* 2 FireStingO2 4 channel oxygen sensors + robust DO probes
-* 2 Sainsmart 8-channel relays
-* 16 24V burkert 6011 solenoid valves (8 for nitrogen and 8 for air)
-* A lot of cable, gas tubes and push-in fittings
-
-### The Code
-*Update: the sketches for multichannel- and long-term hypoxia acclimation have been moved to the "old_sketches" folder. Newer sketches will use the functions from the Ardoxy library*
-*To edit and upload the sketches to an arduino, you need the [arduino IDE](https://www.arduino.cc/en/main/software)*.
-
