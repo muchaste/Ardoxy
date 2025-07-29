@@ -25,8 +25,6 @@ This project is under development.
       * [Solenoid Valves](#solenoid-valves)
       * [Mass-Flow Controllers](#mass-flow-controllers)
   * [Overview](#overview)
-* [Oxygen Control V1](#oxygen-control-v1)
-  * [The Code](#the-code)
 
 ## Quick Start
 1. Gather components: the bare minimum are an Arduino (Uno or Mega), a FireSting oxygen meter with sensors, jumper cables and a 7-Pin connector (I use the [Phoenix contact PTSM 0,5/ 7-P-2,5 - 1778887](https://www.phoenixcontact.com/en-ca/products/pcb-plug-ptsm-05-7-p-25-1778887)).
@@ -108,19 +106,3 @@ However, we have some old MKS mass-flow controllers lying around here. They need
 ### Overview
 ![Overview](./docs/simple_overview.png)
 As mentioned above, the arduino sends to and receives from the sensor via its serial port. The relays are triggered via digital outputs and all is powered by separate power supplies. Also, as this remains untested at the moment, the temperature sensors are not included in this overview
-
-## Oxygen Control V1
-This system was tested in an 8-week hypoxia acclimation experiment. It is designed to measure and control DO in eight tanks. The sketch is now in the "old_sketches" directory
-Here's a list of the components of the last tested configuration for an 8-channel system:
-* 1 Arduino MEGA 2560
-* 1 Adafruit Datalogger Shield (ID1141)
-* 1 Adafruit LCD display (ID714)
-* 2 FireStingO2 4 channel oxygen sensors + robust DO probes
-* 2 Sainsmart 8-channel relays
-* 16 24V burkert 6011 solenoid valves (8 for nitrogen and 8 for air)
-* A lot of cable, gas tubes and push-in fittings
-
-### The Code
-*Update: the sketches for multichannel- and long-term hypoxia acclimation have been moved to the "old_sketches" folder. Newer sketches will use the functions from the Ardoxy library*
-*To edit and upload the sketches to an arduino, you need the [arduino IDE](https://www.arduino.cc/en/main/software)*.
-
