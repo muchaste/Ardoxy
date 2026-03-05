@@ -8,9 +8,17 @@ An Arduino library for interfacing with PyroScience FireSting oxygen meters.
 * long-term acclimation to controlled DO conditions
 
 ## Project Status
-This project is under development. 
+This project is published and actively maintained.
+
+## Citation
+If you use Ardoxy in your research, please cite the following article:
+
+Mucha, S. (2025). A microcontroller-based system for flexible oxygen control in laboratory experiments. *Journal of Experimental Biology*, 228(1), jeb249207. https://doi.org/10.1242/jeb.249207
+
+[Read the article](https://journals.biologists.com/jeb/article/228/1/jeb249207/364933/A-microcontroller-based-system-for-flexible-oxygen)
 
 ## Table of Contents
+* [Citation](#citation)
 * [Quick Start](#quick-start)
   * [Example 1](#example-1-measure_DO)
   * [Example 2](#example-2-setpoint_solenoid)
