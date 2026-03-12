@@ -110,7 +110,7 @@ RTC_PCF8523 RTC;                              // real time clock
 SdFs SD;
 FsFile logfile;                               // initializes the logfile
 char filename[21];                            // array for filename of .csv file
-byte n = 0;                                   // row index for .csv file
+uint32_t n = 0;                               // row index for .csv file
 
 //# Oxygen optode #
 char DOReadCom[11] = "REA 1 3 4\r";           // template for DO-read command that is sent to sensor during void toggleRead() (length = 10 because of /0 string terminator)
@@ -361,6 +361,64 @@ void writeToSD() {
   }
 }
 
+//# Save critical system state to STATE.TXT on SD after every measurement cycle #
+void writeState() {
+  FsFile stateFile;
+  DateTime now;
+  now = RTC.now();
+  SD.remove("STATE.TXT");
+  stateFile = SD.open("STATE.TXT", FILE_WRITE);
+  if (stateFile) {
+    stateFile.print(filename);       stateFile.print(",");
+    stateFile.print(n);              stateFile.print(",");
+    stateFile.print(sampleInterval); stateFile.print(",");
+    stateFile.print(now.year());     stateFile.print(",");
+    stateFile.print(now.month());    stateFile.print(",");
+    stateFile.print(now.day());      stateFile.print(",");
+    stateFile.print(now.hour());     stateFile.print(",");
+    stateFile.print(now.minute());   stateFile.print(",");
+    stateFile.print(now.second());   stateFile.print(",");
+    for (int i = 0; i < channelNumber; i++) {
+      stateFile.print(DOFloat[i]); stateFile.print(",");
+    }
+    stateFile.println(tempFloat);
+    stateFile.close();
+  }
+}
+
+//# Read STATE.TXT from SD; returns true if a valid same-day state was found #
+bool readState() {
+  if (!SD.exists("STATE.TXT")) { return false; }
+  FsFile stateFile;
+  stateFile = SD.open("STATE.TXT", O_RDONLY);
+  if (!stateFile) { return false; }
+  char stateBuffer[160];
+  int len = stateFile.read(stateBuffer, sizeof(stateBuffer) - 1);
+  stateFile.close();
+  if (len <= 0) { return false; }
+  stateBuffer[len] = '\0';
+
+  int savedYear, savedMonth, savedDay;
+  char* tok;
+  tok = strtok(stateBuffer, ","); if (!tok) { return false; }
+  strncpy(filename, tok, sizeof(filename) - 1); filename[sizeof(filename) - 1] = '\0';
+  tok = strtok(NULL, ","); if (!tok) { return false; } n = (uint32_t)atol(tok);
+  tok = strtok(NULL, ","); if (!tok) { return false; } sampleInterval = atol(tok);
+  tok = strtok(NULL, ","); if (!tok) { return false; } savedYear  = atoi(tok);
+  tok = strtok(NULL, ","); if (!tok) { return false; } savedMonth = atoi(tok);
+  tok = strtok(NULL, ","); if (!tok) { return false; } savedDay   = atoi(tok);
+  tok = strtok(NULL, ","); if (!tok) { return false; }  // hour  - skip
+  tok = strtok(NULL, ","); if (!tok) { return false; }  // minute - skip
+  tok = strtok(NULL, ","); if (!tok) { return false; }  // second - skip
+  for (int i = 0; i < channelNumber; i++) {
+    tok = strtok(NULL, ","); if (!tok) { return false; } DOFloat[i] = atof(tok);
+  }
+  tok = strtok(NULL, ",\r\n"); if (!tok) { return false; } tempFloat = atof(tok);
+
+  DateTime now = RTC.now();
+  return (savedYear == (int)now.year() && savedMonth == (int)now.month() && savedDay == (int)now.day());
+}
+
 
 //#######################################################################################
 //###                                   Setup                                         ###
@@ -448,10 +506,45 @@ void setup() {
   }
   delay(500);
 
-//# Create a new logfile #
+//# Create a new logfile or recover state from last run #
   lcd.clear();
-  lcd.print("Create .csv...");
-  createLogfile();
+  bool recovered = readState();
+  if (recovered) {
+    logfile = SD.open(filename, FILE_WRITE);
+    if (!logfile) {
+      lcd.print("Recovery failed");
+      delay(1000);
+      lcd.clear();
+      lcd.print("Create .csv...");
+      createLogfile();
+    } else {
+      DateTime restartTime = RTC.now();
+      logfile.print("RESTART;");
+      logfile.print(restartTime.year()); logfile.print("/");
+      logfile.print(restartTime.month()); logfile.print("/");
+      logfile.print(restartTime.day()); logfile.print(";");
+      logfile.print(restartTime.hour()); logfile.print(":");
+      logfile.print(restartTime.minute()); logfile.print(":");
+      logfile.print(restartTime.second()); logfile.print(";");
+      logfile.print(tempFloat); logfile.print(";");
+      for (int i = 0; i < channelNumber; i++) {
+        logfile.print(DOFloat[i]); logfile.print(";");
+      }
+      logfile.println();
+      logfile.flush();
+      lcd.print("Recovery!");
+      lcd.setCursor(0, 1);
+      lcd.print(filename);
+      Serial.println("State restored from SD. Resuming logfile.");
+      Serial.print("Restored n="); Serial.print(n);
+      Serial.print(" DO: ");
+      for (int i = 0; i < channelNumber; i++) { Serial.print(DOFloat[i]); Serial.print(" "); }
+      Serial.println();
+    }
+  } else {
+    lcd.print("Create .csv...");
+    createLogfile();
+  }
   delay(500);
 
 //# Display control settings 
@@ -552,6 +645,7 @@ void loop() {
   delay(100);
   writeToSD();                                        // log to SD card
   delay(100);
+  writeState();                                       // save system state for power-outage recovery
   DOCheck();                                          // check if low DO threshold is crossed
   if (lowDO){
     Serial.print("low DO! Measured value: ");         // halt program for 20 min to let DO value recover... more code can be inserted here to open an air valve or to light an alarm LED
