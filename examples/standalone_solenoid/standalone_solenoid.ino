@@ -60,6 +60,19 @@ double airSatThreshold[channelNumber] = {100.0, 100.0, 100.0, 15.0};            
 double lowDOThreshold = 7.0;                                                                  // threshold for low oxygen that causes the program to do something
 int channelArray[channelNumber] = {1, 2, 3, 4};                                               // measurement channels from firesting devices 1 and 2 in that order
 
+//# Acclimation scheduling #
+// Phase 1: pre-decrease (before start date), Phase 2: DO decrease, Phase 3: acclimation, Phase 4: post
+const int decreaseDays = 7;                                                                   // days over which DO is stepped down
+const int acclDur = 75;                                                                       // days of hypoxia acclimation
+const double acclThreshold = 15.0;                                                            // target setpoint (% air sat) during acclimation
+const double airSatProgression[7] = {70.0, 60.0, 50.0, 40.0, 30.0, 20.0, 15.0};             // setpoint per ramp-down day (length must match decreaseDays)
+const int acclStartDates[3][4] = {                                                            // per-channel acclimation start date: row0=day, row1=month, row2=year
+  {1,  1,  1,  1 },
+  {1,  1,  1,  1 },
+  {2026, 2026, 2026, 2026}};
+int phaseIdx[4] = {1, 1, 1, 1};                                                               // current phase per channel
+int acclDays[4] = {0, 0, 0, 0};                                                               // elapsed hypoxia days per channel
+
 //# Set the RTC? #
 const int setRTC = 1;                                                                         // upload this sketch once with setRTC = 1 to set the clock to the time
                                                                                               // when this sketch was compiled. Then set setRTC = 0 and upload again.
@@ -84,9 +97,9 @@ const int chipSelect = 10;                                                      
 double Kp[channelNumber] = {10, 10, 10, 10};                    // coefficient for proportional control
 double Ki[channelNumber] = {1, 1, 1, 1};                        // coefficient for integrative control
 double Kd[channelNumber] = {1, 1, 1, 1};                        // coefficient for differential control
-const int windowSize = 75;                                       // The PID will calculate an output between 0 and 75.
-                                                                // This will be multiplied by 200 to ensure a minimum opening time of 200 msec. 
-                                                                // E.g. output = 1 -> opening time 200 msec; output 50 -> opening time 10,000 msec
+long int windowSize = 75;                                        // The PID will calculate an output between 0 and windowSize.
+                                                                // This will be multiplied by 200 to ensure a minimum opening time of 200 msec.
+                                                                // Recomputed in setup() as round(sampleInterval / (200 * 2)).
 
 
 //#######################################################################################
@@ -97,9 +110,11 @@ const int windowSize = 75;                                       // The PID will
 //#######################################################################################
 
 //# Switches and logical operators #
-boolean lowDO = false;                        // boolean for low oxygen threshold
+boolean errorDO = false;                      // boolean for aberrant or low oxygen value
 int activeChannel = 1;                        // measurement channel
 int check;                                    // numerical indicator of succesful measurement (1: success, 0: no connection, 9: mismatch)
+int errorCount = 0;                           // counts communication and sensor errors; triggers reboot at 50
+void(* resetFunc)(void) = 0;                  // software reboot via jump to address 0
 
 //# Measurement timing #
 unsigned long loopStart, elapsed;             // ms timestamp of beginning and end of measurement loop
@@ -119,7 +134,7 @@ long DOInt, tempInt;                          // for measurement result
 long DOSum;                                   // summing variable for air saturations in case oversampling is used (see sample variable)
 double DOFloat[channelNumber], tempFloat;     // measurement result as floating point number
 double lowDOValue;                            // variable for low DO values that are below the critical threshold defined above
-char lowDOTank[6];                            // array for tank name in which low DO has been measured
+char lowDOTank[8];                            // array for tank name in which low DO has been measured
 Ardoxy ardoxy(Serial1);                       // create ardoxy instance on hardware serial port 1
 
 //# Relay operation #
@@ -187,7 +202,7 @@ void showNewData() {
 void DOCheck() {
   for (int k = 0; k < channelNumber; k++){
     if (DOFloat[k] < lowDOThreshold){
-      lowDO = true;
+      errorDO = true;
       lowDOValue = DOFloat[k];
       strcpy(lowDOTank, tankID[k]);
     }
@@ -293,12 +308,25 @@ void createLogfile(){
       logfile.print(";");
     }
     logfile.println(";");
+    logfile.print("Start acclimation:;");
+    for (int i = 0; i < channelNumber; i++) {
+      logfile.print(acclStartDates[2][i]);
+      logfile.print("/");
+      logfile.print(acclStartDates[1][i]);
+      logfile.print("/");
+      logfile.print(acclStartDates[0][i]);
+      logfile.print(";");
+    }
+    logfile.println(";");
     logfile.println(";");
     logfile.print("Measurement;Date;Time;Temp_");                  // header row for measurements: Measurement, Date, Time, tankID1, tankID2,...
     logfile.print(tempID);
     logfile.print(";");
-    for (int i = 0; i < (channelNumber); i++) {
+    for (int i = 0; i < channelNumber; i++) {
       logfile.print("DO_");
+      logfile.print(tankID[i]);
+      logfile.print(";");
+      logfile.print("days_hyp_");
       logfile.print(tankID[i]);
       logfile.print(";");
     }
@@ -355,6 +383,8 @@ void writeToSD() {
     for (int k = 0; k < channelNumber; k++) {         // print air saturation measurements for each channel
       logfile.print(DOFloat[k]);
       logfile.print(";");
+      logfile.print(acclDays[k]);
+      logfile.print(";");
     }
     logfile.println();
     logfile.flush();                                  // save data to logfile
@@ -381,7 +411,12 @@ void writeState() {
     for (int i = 0; i < channelNumber; i++) {
       stateFile.print(DOFloat[i]); stateFile.print(",");
     }
-    stateFile.println(tempFloat);
+    stateFile.print(tempFloat); stateFile.print(",");
+    for (int i = 0; i < channelNumber; i++) {
+      stateFile.print(acclDays[i]);
+      if (i < channelNumber - 1) stateFile.print(",");
+    }
+    stateFile.println();
     stateFile.close();
   }
 }
@@ -413,7 +448,10 @@ bool readState() {
   for (int i = 0; i < channelNumber; i++) {
     tok = strtok(NULL, ","); if (!tok) { return false; } DOFloat[i] = atof(tok);
   }
-  tok = strtok(NULL, ",\r\n"); if (!tok) { return false; } tempFloat = atof(tok);
+  tok = strtok(NULL, ","); if (!tok) { return false; } tempFloat = atof(tok);
+  for (int i = 0; i < channelNumber; i++) {
+    tok = strtok(NULL, ",\r\n"); if (!tok) { return false; } acclDays[i] = atoi(tok);
+  }
 
   DateTime now = RTC.now();
   return (savedYear == (int)now.year() && savedMonth == (int)now.month() && savedDay == (int)now.day());
@@ -431,6 +469,7 @@ void setup() {
   delay(300);
   Serial.println("-------------- Ardoxy 4 channel control example -------------");
   ardoxy.begin();
+  windowSize = (long)round((double)sampleInterval / (200.0 * 2));
     
 //# Set up one PID per channel #
   relay1PID.SetMode(AUTOMATIC);
@@ -582,6 +621,22 @@ void setup() {
   
   // Set lastday for saving every day
   lastday = now.day();
+
+  // Initialize per-channel acclimation phase and thresholds from RTC date
+  for (int i = 0; i < channelNumber; i++) {
+    acclDays[i] = Ardoxy::calcDays(acclStartDates[0][i], acclStartDates[1][i], acclStartDates[2][i], now.day(), now.month(), now.year());
+    if (acclDays[i] == 0) {
+      phaseIdx[i] = 1;
+    } else if (acclDays[i] <= decreaseDays) {
+      phaseIdx[i] = 2;
+      airSatThreshold[i] = airSatProgression[acclDays[i] - 1];
+    } else if (acclDays[i] <= decreaseDays + acclDur) {
+      phaseIdx[i] = 3;
+      airSatThreshold[i] = acclThreshold;
+    } else {
+      phaseIdx[i] = 4;
+    }
+  }
 }
 
 //#######################################################################################
@@ -598,6 +653,29 @@ void loop() {
   DateTime now;
   now = RTC.now();  
   curday = now.day();
+  errorDO = false;                                            // reset error flag each cycle
+
+  // Update per-channel acclimation phase and threshold (runs before lastday is updated)
+  for (int i = 0; i < channelNumber; i++) {
+    if (phaseIdx[i] == 1) {
+      acclDays[i] = Ardoxy::calcDays(acclStartDates[0][i], acclStartDates[1][i], acclStartDates[2][i], curday, now.month(), now.year());
+    } else if (phaseIdx[i] >= 2 && curday != lastday) {
+      acclDays[i]++;
+    }
+    if (acclDays[i] == 0) {
+      phaseIdx[i] = 1;
+    } else if (acclDays[i] <= decreaseDays) {
+      phaseIdx[i] = 2;
+      airSatThreshold[i] = airSatProgression[acclDays[i] - 1];
+    } else if (acclDays[i] <= decreaseDays + acclDur) {
+      phaseIdx[i] = 3;
+      airSatThreshold[i] = acclThreshold;
+    } else {
+      phaseIdx[i] = 4;
+      airSatThreshold[i] = 100.0;
+    }
+  }
+
   if (curday != lastday){                                     // create a new logfile for every day
     logfile.close();
     delay(100);
@@ -625,6 +703,8 @@ void loop() {
           lcd.clear();
           lcd.setCursor(0,0);
           lcd.print("Com error!");
+          errorCount++;
+          if (errorCount >= 50) { resetFunc(); }
           ardoxy.end();
           delay(1000);
           ardoxy.begin();
@@ -640,6 +720,10 @@ void loop() {
       DOSum = DOSum + DOInt;                          // sum up air saturation readings for consecutive samples
     }
     DOFloat[i] = DOSum / (samples * 1000.00);         // create floating point number for logging, display, etc. Results in 0 if there's a communication error
+    if (DOFloat[i] == 34276.94) {                     // known bad-read sentinel from PyroScience firmware
+      DOFloat[i] = airSatThreshold[i];
+      errorDO = true;
+    }
   }
   showNewData();                                      // display measurement on LCD
   delay(100);
@@ -647,17 +731,17 @@ void loop() {
   delay(100);
   writeState();                                       // save system state for power-outage recovery
   DOCheck();                                          // check if low DO threshold is crossed
-  if (lowDO){
-    Serial.print("low DO! Measured value: ");         // halt program for 20 min to let DO value recover... more code can be inserted here to open an air valve or to light an alarm LED
+  if (errorDO){
+    Serial.print("Error/low DO! Measured value: ");
     Serial.println(lowDOValue);
     lcd.clear();
-    lcd.print("low DO at ");
+    lcd.print("err DO at ");
     lcd.print(lowDOTank);
     lcd.setCursor(0,1);
-    lcd.print("measured: ");
+    lcd.print("val: ");
     lcd.print(lowDOValue);
-    delay(1200*1000UL);
-    lowDO = false;
+    errorCount++;
+    if (errorCount >= 50) { resetFunc(); }
   } else { 
     toggleRelay();                                    // operate relays to open solenoid valves
     elapsed = millis() - loopStart;                   // calculate duration of loop
