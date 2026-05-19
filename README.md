@@ -2,7 +2,7 @@
 An Arduino library for interfacing with PyroScience FireSting oxygen meters.
 
 ## Use Cases
-* measurement and logging of dissolved oxygen (DO) concentration and temperature without a computer
+* measurement and logging of dissolved oxygen (DO) concentration and temperature
 * automated control of DO concentration via solenoid valves or mass-flow controller
 * establishment of pre-defined DO regime in fish tanks
 * long-term acclimation to controlled DO conditions
@@ -19,10 +19,16 @@ Mucha, S. (2025). A microcontroller-based system for flexible oxygen control in 
 
 ## Table of Contents
 * [Citation](#citation)
-* [Quick Start](#quick-start)
-  * [Example 1](#example-1-measure_DO)
-  * [Example 2](#example-2-setpoint_solenoid)
-  * [Python Sketch Builder](#Python-Sketch-Builder)
+* [Two Approaches](#two-approaches)
+* [Ardoxy-OS](#ardoxy-os) *(under development)*
+  * [Requirements](#requirements)
+  * [Installation](#installation)
+  * [Running Ardoxy-OS](#running-ardoxy-os)
+  * [Modes](#modes)
+* [Dedicated Example Sketches](#dedicated-example-sketches)
+  * [Example 1: measure\_DO](#example-1-measure_do)
+  * [Example 2: setpoint\_solenoid](#example-2-setpoint_solenoid)
+  * [Python Sketch Builder](#python-sketch-builder)
 * [Background](#background)
 * [Long-Term Oxygen Control: Basic Setup](#long-term-oxygen-control-basic-setup)
   * [List of Materials](#list-of-materials)
@@ -34,22 +40,109 @@ Mucha, S. (2025). A microcontroller-based system for flexible oxygen control in 
       * [Mass-Flow Controllers](#mass-flow-controllers)
   * [Overview](#overview)
 
-## Quick Start
-1. Gather components: the bare minimum are an Arduino (Uno or Mega), a FireSting oxygen meter with sensors, jumper cables and a 7-Pin connector (I use the [Phoenix contact PTSM 0,5/ 7-P-2,5 - 1778887](https://www.phoenixcontact.com/en-ca/products/pcb-plug-ptsm-05-7-p-25-1778887)).
-2. Set up the oxygen meter with the PyroScience Workbench software ([link](https://www.pyroscience.com/en/downloads/laboratory-devices?file=files/website_data/Downloads/Software/InstallerPyroWorkbench.zip&cid=17724)). Follow the instructions for your specific device, and calibrate it according to the manual.
-3. Install the [Arduino IDE](https://www.arduino.cc/en/software)
-4. Clone or download this repository and extract the "Ardoxy" folder to the library directory of your Arduino IDE (Windows default: documents>>Arduino>>libraries). Start the Arduino IDE and select one of the examples from "File>>Examples>>Ardoxy".
-5. Connect the Arduino to the meter as described in the example sketch and upload the sketch to the Arduino. Follow measurements using, e.g., the Serial Monitor.
+## Two Approaches
+
+Ardoxy offers two complementary ways to use the system, depending on how much control and flexibility you need:
+
+| | **Ardoxy-OS** | **Dedicated sketches** |
+|---|---|---|
+| Arduino upload | Once | Once per experiment type |
+| Configuration | Python GUI at runtime | Edit constants in the sketch before upload |
+| Best for | Rapid setup, switching modes without re-uploading | Customised experiments, offline/standalone use |
+| Status | Under active development | Stable |
+
+---
+
+## Ardoxy-OS
+
+> **Under development.** Core functionality (measurement, single setpoint, sequence control) is implemented. The interface and feature set are still evolving.
+
+Ardoxy-OS consists of two parts:
+
+* **`examples/ardoxy_os/ardoxy_os.ino`** — a general-purpose Arduino sketch that is uploaded once. It sits idle until configured from the PC and supports all control modes without re-uploading.
+* **`utils/ardoxy_gui/ardoxy_gui.py`** — a Python GUI application that connects to the Arduino over USB serial, configures the experiment, starts/stops measurement and control, and plots and logs the results in real time.
+
+### Requirements
+
+**Arduino side**
+* Arduino Uno (or compatible)
+* [Arduino IDE](https://www.arduino.cc/en/software)
+* Arduino libraries (install via the IDE Library Manager):
+  * `Ardoxy` (this library)
+  * `PID` by Brett Beauregard
+
+**PC side**
+* Python 3.9 or later
+* Dependencies listed in [`utils/ardoxy_gui/requirements.txt`](./utils/ardoxy_gui/requirements.txt):
+
+```
+pyserial
+matplotlib
+```
+
+### Installation
+
+1. **Install the Ardoxy library.** Clone or download this repository and copy the `Ardoxy` folder into your Arduino libraries directory (Windows default: `Documents\Arduino\libraries`).
+
+2. **Install Python dependencies.**
+   ```
+   pip install -r utils/ardoxy_gui/requirements.txt
+   ```
+
+3. **Upload the OS sketch.** Open `examples/ardoxy_os/ardoxy_os.ino` in the Arduino IDE, select your board and port, and upload. This only needs to be done once.
+
+4. **Connect hardware.** Wire the FireSting oxygen meter to the Arduino as described in the dedicated sketches (RX=pin 8, TX=pin 9 by default). Connect relay modules to the digital output pins you intend to use for valve control.
+
+### Running Ardoxy-OS
+
+```
+python utils/ardoxy_gui/ardoxy_gui.py
+```
+
+The GUI opens with three tabs:
+
+**Connect** — select the COM port of your Arduino and click *Connect*. The Arduino state (`IDLE`, `CONFIGURED`, `RUNNING`) is displayed here.
+
+**Configure** — choose a mode, set the number of channels, assign relay pins, and enter timing and control parameters. Click *Send Config to Arduino* to transfer the configuration. The Arduino does not start measuring until you explicitly click Start.
+
+**Run & Monitor** — click *Start* to begin. A live chart shows DO (% air saturation) per channel and temperature. A data table shows the last 200 readings. Click *Save CSV* at any time to export all accumulated data. Click *Stop* to halt the run; the configuration is preserved and the run can be resumed with *Start* again.
+
+### Modes
+
+| Mode | Description |
+|---|---|
+| **MEASURE** | Continuous DO and temperature measurement. No valve control. Runs until *Stop* is pressed. |
+| **SETPOINT** | PID-controlled solenoid valve(s) maintain DO at a single target value for a defined duration. |
+| **SEQUENCE** | Multi-phase experiment. Each phase is a *hold* (maintain a setpoint), *change* (ramp to a new setpoint), or *pause* (valves closed). Phases are defined in the GUI table. |
+
+---
+
+## Dedicated Example Sketches
+
+These sketches are standalone Arduino programs. Each covers one specific use case and is designed to be read, understood, and modified directly. They are the most straightforward path if you want to customise the control logic or run the Arduino without a PC.
+
+**General setup for all sketches:**
+1. Gather components: an Arduino (Uno or Mega), a FireSting oxygen meter with sensors, jumper cables and a 7-pin connector (e.g. [Phoenix contact PTSM 0,5/ 7-P-2,5 - 1778887](https://www.phoenixcontact.com/en-ca/products/pcb-plug-ptsm-05-7-p-25-1778887)).
+2. Set up and calibrate the oxygen meter using the PyroScience Workbench software ([download](https://www.pyroscience.com/en/downloads/laboratory-devices?file=files/website_data/Downloads/Software/InstallerPyroWorkbench.zip&cid=17724)).
+3. Install the [Arduino IDE](https://www.arduino.cc/en/software).
+4. Install the Ardoxy library (see [Installation](#installation) above) and open an example from *File → Examples → Ardoxy*.
+5. Edit the configuration constants at the top of the sketch, then upload.
 
 ### Example 1: measure_DO
-This example sketch sends temperature and DO measurements via serial to the PC. To plot these values, [download SerialPlot](https://hackaday.io/project/5334-serialplot-realtime-plotting-software) and load the settings file from this repo ([link](./utils/SerialPlotter%20config%20measure%20and%20plot.ini). This great piece of software allows you to send commands (to trigger the start of measurements) and to visualize and log values.
+Sends temperature and DO measurements via serial to the PC. To plot these values, [download SerialPlot](https://hackaday.io/project/5334-serialplot-realtime-plotting-software) and load the settings file from this repo ([link](./utils/SerialPlotter%20config%20measure%20and%20plot.ini)). This software allows you to send commands (to trigger the start of measurements) and to visualize and log values.
 ![Measure_DO_example](./docs/measure_DO_screencapture.gif)
 
 ### Example 2: setpoint_solenoid
-This example sketch controls DO via solenoid valves that are connected to a relay module. The measured values are sent to the computer via serial connection and can be plotted (as above) or logged, e.g., using [ExtraPuTTY](https://sourceforge.net/projects/extraputty/). The Arduino opens the valves to allow gas flow (nitrogen or air/oxygen) to regulate DO to a defined setpoint for a defined duration.
+Controls DO via solenoid valves connected to a relay module. Measured values are sent to the computer via serial and can be plotted (as above) or logged, e.g., using [ExtraPuTTY](https://sourceforge.net/projects/extraputty/). The Arduino opens the valves to allow gas flow (nitrogen or air/oxygen) to regulate DO to a defined setpoint for a defined duration.
+
+Additional dedicated sketches cover:
+* `setpoint_motor` — setpoint control via a stepper motor driving a needle valve
+* `sequence_solenoid` — multi-phase sequence control with solenoid valves
+* `sequence_motor` — multi-phase sequence control with a stepper motor
+* `standalone_solenoid` — fully autonomous 4-channel control with SD card logging, RTC, and LCD display (no PC required)
 
 ### Python Sketch Builder
-The [Python Sketch Builder](./utils/Single%20Setpoint%20Sketch%20Builder.py) is a simple program with a graphical user interface that lets users set the most important parameters for single-setpoint (static) DO control programs and create an Arduino sketch for upload.
+The [Python Sketch Builder](./utils/Single%20Setpoint%20Sketch%20Builder.py) is a GUI tool that generates a ready-to-upload `setpoint_solenoid`-style sketch with user-defined parameters (setpoint, PID gains, pins, timing) for 1–4 channels, without editing code manually.
 ![Python_Sketch_Builder](./docs/Sketch%20Builder%20GUI.png)
 
 
