@@ -387,3 +387,70 @@ int Ardoxy::calcDays(int startDay, int startMonth, int startYear, int endDay, in
   }
   return dayDuration;
 }
+
+// Measure temperature and DO on nChannels. Returns 1 on success, 0 on any failure.
+int Ardoxy::measureAll(int nChannels, double doVals[], double* tempVal) {
+  if (!measureTemp()) return 0;
+  long rawTemp = readoutTemp();
+  *tempVal = rawTemp / 1000.0;
+  for (int i = 0; i < nChannels; i++) {
+    if (!measureDO(i + 1)) return 0;
+    long rawDO = readoutDO(i + 1);
+    doVals[i] = rawDO / 1000.0;
+  }
+  return 1;
+}
+
+// Sort channels by output ascending, open all non-zero, close sequentially.
+// Channels whose output * 200 ms >= maxOpenMs remain open for the full interval.
+// HIGH = closed, LOW = open (standard relay convention).
+void Ardoxy::scheduleRelays(int nChannels, double outputs[], const int relayPins[], unsigned long maxOpenMs) {
+  int sorted[ARDOXY_MAX_CHANNELS];
+  for (int i = 0; i < nChannels; i++) sorted[i] = i;
+  for (int i = 0; i < nChannels - 1; i++) {
+    for (int j = i + 1; j < nChannels; j++) {
+      if (outputs[sorted[j]] < outputs[sorted[i]]) {
+        int tmp = sorted[i]; sorted[i] = sorted[j]; sorted[j] = tmp;
+      }
+    }
+  }
+
+  unsigned long openTimes[ARDOXY_MAX_CHANNELS];
+  bool fullyOpen[ARDOXY_MAX_CHANNELS];
+  for (int i = 0; i < nChannels; i++) {
+    unsigned long t = (unsigned long)(outputs[sorted[i]]) * 200UL;
+    fullyOpen[i] = (t >= maxOpenMs);
+    openTimes[i] = fullyOpen[i] ? maxOpenMs : t;
+  }
+
+  // Close zero-output valves (handles transition away from fully-open state)
+  for (int i = 0; i < nChannels; i++) {
+    if (openTimes[i] == 0) {
+      digitalWrite(relayPins[sorted[i]], HIGH);
+    }
+  }
+
+  // Open all valves with non-zero open time simultaneously
+  for (int i = 0; i < nChannels; i++) {
+    if (openTimes[i] > 0) {
+      digitalWrite(relayPins[sorted[i]], LOW);
+    }
+  }
+
+  // Close non-fully-open valves sequentially (shortest first)
+  unsigned long elapsed = 0;
+  for (int i = 0; i < nChannels; i++) {
+    if (openTimes[i] > 0 && !fullyOpen[i]) {
+      delay(openTimes[i] - elapsed);
+      elapsed = openTimes[i];
+      digitalWrite(relayPins[sorted[i]], HIGH);
+    }
+  }
+}
+
+// Close all relay pins (HIGH = closed).
+void Ardoxy::closeRelays(int nChannels, const int relayPins[]) {
+  for (int i = 0; i < nChannels; i++) {
+    digitalWrite(relayPins[i], HIGH);
+  }
+}

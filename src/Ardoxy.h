@@ -10,6 +10,7 @@
 #include <SoftwareSerial.h>
 
 #define numChars 60
+#define ARDOXY_MAX_CHANNELS 8
 
 class Ardoxy
 {
@@ -28,6 +29,9 @@ class Ardoxy
     long readoutDO(int chan);
     long readoutTemp();
     static int calcDays(int startDay, int startMonth, int startYear, int endDay, int endMonth, int endYear);
+    int measureAll(int nChannels, double doVals[], double* tempVal);
+    static void scheduleRelays(int nChannels, double outputs[], const int relayPins[], unsigned long maxOpenMs);
+    static void closeRelays(int nChannels, const int relayPins[]);
 
   private:
     HardwareSerial* hwStream;
