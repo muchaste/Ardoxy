@@ -73,7 +73,6 @@ double changeKd = 0;                                                            
 
 // DO measurement
 double DOFloat, DOFloatPrev;                        // Floating point DO values for each channel
-long DOInt, tempInt;                                // for measurement result of each channel
 double tempFloat;                                   // measurement result as floating point number
 const int measureDur = 400;                         // duration of measurement in ms (-> during this time, the system is blocked)
 double deltaDO;                                     // measured change rate
@@ -99,8 +98,6 @@ unsigned long progStart, progEnd;           // ms timestamp of beginning and end
 
 // Switches and logical operators
 bool startTrigger = false;                  // trigger for start of measurement
-bool valveOpen = false;                     // indicator if the solenoid should remain open over one loop iteration
-int check;                                  // numerical indicator of succesful measurement (1: success, 0: no connection, 9: mismatch)
 
 // Instances
 SoftwareSerial mySer(RX, TX);               // serial connection to the Firesting
@@ -129,13 +126,8 @@ void setup() {
   myStepper->setSpeed(10);
 
   //# Set up PID control #
-  changePID.SetMode(AUTOMATIC);
-  changePID.SetSampleTime(sampInterval);
-  changePID.SetOutputLimits(0, opened);
-  
-  holdPID.SetMode(AUTOMATIC);
-  holdPID.SetSampleTime(sampInterval);
-  holdPID.SetOutputLimits(0, opened);
+  Ardoxy::configurePID(changePID, changeKp, changeKi, changeKd, sampInterval, opened);
+  Ardoxy::configurePID(holdPID, constantKp, constantKi, constantKd, sampInterval, opened);
 
   //# Durations as ms
   for(int i = 0; i < nPhases; i++) {
@@ -184,43 +176,33 @@ void loop() {
             startTrigger = false;
           } else {
             // First measurement and settings for the first phase
-            check = ardoxy.measureTemp();                     // measure temperature
-            if(check == 1){
-              tempInt = ardoxy.readoutTemp();                 // read temperature value from results register
-              tempFloat = tempInt / 1000.00;
-              check = ardoxy.measureDO(channel);                // measure DO on channel i+1
-              if(check == 1){
-                DOInt = ardoxy.readoutDO(channel);              // read DO value from results register
-                DOFloat = DOInt / 1000.00;                      // convert to floating point number
-
-                // Define setpoints according to phase index
-                // If it's a change phase
-                if (strcmp(phaseType[phaseIdx],"c")==0){
-                  counter = 0;
-                  changeRate = (DOSetpoints[phaseIdx] - DOFloat) / (float(durations[phaseIdx]) / 60000.00); // change rate for DO decline per minute
-                  // Set Controller Direction
-                  if (changeRate > 0){
-                    changePID.SetControllerDirection(DIRECT);
-                  } else {
-                    changePID.SetControllerDirection(REVERSE);
-                  }
-                } else if (strcmp(phaseType[phaseIdx],"h")==0){
-                  setpoint = DOSetpoints[phaseIdx];
-                  // Set Controller Direction
-                  if (setpoint > 100){
-                    holdPID.SetControllerDirection(DIRECT);
-                  } else {
-                    holdPID.SetControllerDirection(REVERSE);
-                  }
-                } else if(strcmp(phaseType[phaseIdx],"p")==0){
-                  Serial.println("Paused. Send a \"9\" to continue control.");
-                  startTrigger = false;
-                  myStepper->step(stepCount, BACKWARD, MICROSTEP);
-                  stepCount = 0;
+            if (ardoxy.measureAll(1, &DOFloat, &tempFloat)) {
+              // Define setpoints according to phase index
+              // If it's a change phase
+              if (strcmp(phaseType[phaseIdx],"c")==0){
+                counter = 0;
+                changeRate = (DOSetpoints[phaseIdx] - DOFloat) / (float(durations[phaseIdx]) / 60000.00); // change rate for DO decline per minute
+                // Set Controller Direction
+                if (changeRate > 0){
+                  changePID.SetControllerDirection(DIRECT);
+                } else {
+                  changePID.SetControllerDirection(REVERSE);
                 }
+              } else if (strcmp(phaseType[phaseIdx],"h")==0){
+                setpoint = DOSetpoints[phaseIdx];
+                // Set Controller Direction
+                if (setpoint > 100){
+                  holdPID.SetControllerDirection(DIRECT);
+                } else {
+                  holdPID.SetControllerDirection(REVERSE);
+                }
+              } else if(strcmp(phaseType[phaseIdx],"p")==0){
+                Serial.println("Paused. Send a \"9\" to continue control.");
+                startTrigger = false;
+                myStepper->step(stepCount, BACKWARD, MICROSTEP);
+                stepCount = 0;
               }
-            }
-            if(check != 1){
+            } else {
               Serial.println("Com error. Check connections and send \"1\" to restart.");
               ardoxy.end();
               startTrigger = false;
@@ -283,63 +265,54 @@ void loop() {
 
   if (startTrigger){
     DOFloatPrev = DOFloat;
-    check = ardoxy.measureTemp();                     // measure temperature
-    if (check == 1){
-      tempInt = ardoxy.readoutTemp();                 // read temperature value from results register
-      tempFloat = tempInt / 1000.00;
-      check = ardoxy.measureDO(channel);                // measure DO on channel i+1
-      if (check == 1){
-        DOInt = ardoxy.readoutDO(channel);              // read DO value from results register
-        DOFloat = DOInt / 1000.00;                      // convert to floating point number
-        if (strcmp(phaseType[phaseIdx], "c") == 0){
-          deltaDO = (DOFloat - DOFloatPrev)*60/(sampInterval/1000.00); // change rate for DO decline per minute
-          counter += 1;
-          if (counter >= rateReCalc){
-            counter = 0;
-            changeRate = (DOSetpoints[phaseIdx] - DOFloat) / (float(durations[phaseIdx]-(loopStart - phaseMarks[phaseIdx])) / 60000.00); // change rate for DO decline per minute
-          }
-          changePID.Compute();
-        } else if (strcmp(phaseType[phaseIdx], "h") == 0){
-          holdPID.Compute();
+    if (ardoxy.measureAll(1, &DOFloat, &tempFloat)) {
+      if (strcmp(phaseType[phaseIdx], "c") == 0){
+        deltaDO = (DOFloat - DOFloatPrev)*60/(sampInterval/1000.00); // change rate for DO decline per minute
+        counter += 1;
+        if (counter >= rateReCalc){
+          counter = 0;
+          changeRate = (DOSetpoints[phaseIdx] - DOFloat) / (float(durations[phaseIdx]-(loopStart - phaseMarks[phaseIdx])) / 60000.00); // change rate for DO decline per minute
         }
-        // Print to serial
-        Serial.print(DOFloat);
-        Serial.print(";");
-        Serial.print(PIDsteps);
-        Serial.print(";");
-        Serial.print(tempFloat);
-        Serial.print(";");
-        Serial.print(DOSetpoints[phaseIdx]);
-        Serial.print(";");
-        Serial.print(phaseIdx+1);
-        Serial.print(";");
-        Serial.println(phaseType[phaseIdx]);
-    
-        // Operate stepper motor
-        PIDsteps = round(output);
-        if(PIDsteps > stepCount) {
-          if((PIDsteps - stepCount) > stepsPerInterval) {
-            PIDsteps = stepCount + stepsPerInterval;
-            output = PIDsteps * 1.0;
-          }
-          myStepper->step(int(PIDsteps-stepCount), FORWARD, MICROSTEP);
-        } else if (PIDsteps < stepCount){
-          if((stepCount - PIDsteps) > stepsPerInterval) {
-            PIDsteps = stepCount - stepsPerInterval;
-            output = PIDsteps * 1.0;
-          }
-          myStepper->step(int(stepCount-PIDsteps), BACKWARD, MICROSTEP);
-        }
-        stepCount = PIDsteps;
-
-        // wait for next loop iteration
-        elapsed = millis()-loopStart;
-        if (sampInterval > elapsed) {
-          delay(sampInterval - elapsed);          
-        }
+        changePID.Compute();
+      } else if (strcmp(phaseType[phaseIdx], "h") == 0){
+        holdPID.Compute();
       }
-    }
-    if(check != 1){
+      // Print to serial
+      Serial.print(DOFloat);
+      Serial.print(";");
+      Serial.print(PIDsteps);
+      Serial.print(";");
+      Serial.print(tempFloat);
+      Serial.print(";");
+      Serial.print(DOSetpoints[phaseIdx]);
+      Serial.print(";");
+      Serial.print(phaseIdx+1);
+      Serial.print(";");
+      Serial.println(phaseType[phaseIdx]);
+  
+      // Operate stepper motor
+      PIDsteps = round(output);
+      if(PIDsteps > stepCount) {
+        if((PIDsteps - stepCount) > stepsPerInterval) {
+          PIDsteps = stepCount + stepsPerInterval;
+          output = PIDsteps * 1.0;
+        }
+        myStepper->step(int(PIDsteps-stepCount), FORWARD, MICROSTEP);
+      } else if (PIDsteps < stepCount){
+        if((stepCount - PIDsteps) > stepsPerInterval) {
+          PIDsteps = stepCount - stepsPerInterval;
+          output = PIDsteps * 1.0;
+        }
+        myStepper->step(int(stepCount-PIDsteps), BACKWARD, MICROSTEP);
+      }
+      stepCount = PIDsteps;
+
+      // wait for next loop iteration
+      elapsed = millis()-loopStart;
+      if (sampInterval > elapsed) {
+        delay(sampInterval - elapsed);          
+      }
+    } else {
       myStepper->step(stepCount, BACKWARD, MICROSTEP);
       stepCount = 0;
       Serial.println("Com error. Check connections and send \"1\" to restart.");

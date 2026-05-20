@@ -50,7 +50,7 @@ const int channel = 1;                          // channel on the Firesting mete
 // Define pins
 const int RX = 8;                               // RX pin for serial communication
 const int TX = 9;                               // TX pin for serial communication
-const int relayPin = 3;                         // pin for relay operation
+const int relayPins[1] = {3};                   // pin for relay operation
 
 // DO setpoints for each phase
 double DOSetpoints[nPhases] = {50.00, 50.00, 30.00, 30.00};     // target air saturation value
@@ -74,10 +74,8 @@ double changeKd = 0;                                                            
 
 // DO measurement
 double DOFloat, DOFloatPrev;                        // Floating point DO values for each channel
-long DOInt, tempInt;                                // for measurement result of each channel
 double tempFloat;                                   // measurement result as floating point number
 const int closed = HIGH;                            // marks the output on the relay pin, which should close the valve
-const int open = !closed;
 const int measureDur = 400;                         // duration of measurement in ms (-> during this time, the system is blocked)
 double deltaDO;                                     // measured change rate
 double changeRate;                                  // setpoint for change rate
@@ -93,8 +91,6 @@ unsigned long progStart, progEnd;           // ms timestamp of beginning and end
 
 // Switches and logical operators
 bool startTrigger = false;                  // trigger for start of measurement
-bool valveOpen = false;                     // indicator if the solenoid should remain open over one loop iteration
-int check;                                  // numerical indicator of succesful measurement (1: success, 0: no connection, 9: mismatch)
 
 // Instances
 SoftwareSerial mySer(RX, TX);               // serial connection to the Firesting
@@ -117,17 +113,12 @@ void setup() {
   delay(100);    
 
   // Set up relay pin
-  pinMode(relayPin, OUTPUT);
-  digitalWrite(relayPin, closed);
+  pinMode(relayPins[0], OUTPUT);
+  digitalWrite(relayPins[0], HIGH);
 
   //# Set up PID control #
-  changePID.SetMode(AUTOMATIC);
-  changePID.SetSampleTime(sampInterval);
-  changePID.SetOutputLimits(0, windowSize);
-  
-  holdPID.SetMode(AUTOMATIC);
-  holdPID.SetSampleTime(sampInterval);
-  holdPID.SetOutputLimits(0, windowSize);
+  Ardoxy::configurePID(changePID, changeKp, changeKi, changeKd, sampInterval, windowSize);
+  Ardoxy::configurePID(holdPID, constantKp, constantKi, constantKd, sampInterval, windowSize);
 
   //# Durations as ms
   for(int i = 0; i < nPhases; i++) {
@@ -170,48 +161,37 @@ void loop() {
           Serial.println("Air_sat;Open_time;Temp_deg_C;Setpoint;Phase_nr;Phase_type");
           if (phaseIdx >= nPhases){
             ardoxy.end();
-            digitalWrite(relayPin, closed);
-            valveOpen = false;
+            Ardoxy::closeRelays(1, relayPins);
             Serial.println("End of experiment. Arduino stopps.");
             startTrigger = false;
           } else {
             // First measurement and settings for the first phase
-            check = ardoxy.measureTemp();                     // measure temperature
-            if(check == 1){
-              tempInt = ardoxy.readoutTemp();                 // read temperature value from results register
-              tempFloat = tempInt / 1000.00;
-              check = ardoxy.measureDO(channel);                // measure DO on channel i+1
-              if(check == 1){
-                DOInt = ardoxy.readoutDO(channel);              // read DO value from results register
-                DOFloat = DOInt / 1000.00;                      // convert to floating point number
-
-                // Define setpoints according to phase index
-                // If it's a change phase
-                if (strcmp(phaseType[phaseIdx],"c")==0){
-                  counter = 0;
-                  changeRate = (DOSetpoints[phaseIdx] - DOFloat) / (float(durations[phaseIdx]) / 60000.00); // change rate for DO decline per minute
-                  // Set Controller Direction
-                  if (changeRate > 0){
-                    changePID.SetControllerDirection(DIRECT);
-                  } else {
-                    changePID.SetControllerDirection(REVERSE);
-                  }
-                } else if (strcmp(phaseType[phaseIdx],"h")==0){
-                  setpoint = DOSetpoints[phaseIdx];
-                  // Set Controller Direction
-                  if (setpoint > 100){
-                    holdPID.SetControllerDirection(DIRECT);
-                  } else {
-                    holdPID.SetControllerDirection(REVERSE);
-                  }
-                } else if(strcmp(phaseType[phaseIdx],"p")==0){
-                  Serial.println("Paused. Send a \"9\" to continue control.");
-                  startTrigger = false;
-                  digitalWrite(relayPin, closed);
+            if (ardoxy.measureAll(1, &DOFloat, &tempFloat)) {
+              // Define setpoints according to phase index
+              // If it's a change phase
+              if (strcmp(phaseType[phaseIdx],"c")==0){
+                counter = 0;
+                changeRate = (DOSetpoints[phaseIdx] - DOFloat) / (float(durations[phaseIdx]) / 60000.00); // change rate for DO decline per minute
+                // Set Controller Direction
+                if (changeRate > 0){
+                  changePID.SetControllerDirection(DIRECT);
+                } else {
+                  changePID.SetControllerDirection(REVERSE);
                 }
+              } else if (strcmp(phaseType[phaseIdx],"h")==0){
+                setpoint = DOSetpoints[phaseIdx];
+                // Set Controller Direction
+                if (setpoint > 100){
+                  holdPID.SetControllerDirection(DIRECT);
+                } else {
+                  holdPID.SetControllerDirection(REVERSE);
+                }
+              } else if(strcmp(phaseType[phaseIdx],"p")==0){
+                Serial.println("Paused. Send a \"9\" to continue control.");
+                startTrigger = false;
+                Ardoxy::closeRelays(1, relayPins);
               }
-            }
-            if(check != 1){
+            } else {
               Serial.println("Com error. Check connections and send \"1\" to restart.");
               ardoxy.end();
               startTrigger = false;
@@ -223,8 +203,7 @@ void loop() {
           startTrigger = false;
           ardoxy.end();
           Serial.println("Stopped");
-          digitalWrite(relayPin, closed);
-          valveOpen = false;
+          Ardoxy::closeRelays(1, relayPins);
           break;
     }
   }
@@ -238,8 +217,7 @@ void loop() {
       // Close valve at end of the experiment and stop arduino
       if (phaseIdx >= nPhases){
         ardoxy.end();
-        digitalWrite(relayPin, closed);
-        valveOpen = false;
+        Ardoxy::closeRelays(1, relayPins);
         Serial.println("End of experiment. Arduino stopps.");
         startTrigger = false;
       } else {
@@ -265,7 +243,7 @@ void loop() {
         } else if(strcmp(phaseType[phaseIdx],"p")==0){
           Serial.println("Paused. Send a \"9\" to continue control.");
           startTrigger = false;
-          digitalWrite(relayPin, closed);
+          Ardoxy::closeRelays(1, relayPins);
         }
       }
     }
@@ -273,66 +251,40 @@ void loop() {
 
   if (startTrigger){
     DOFloatPrev = DOFloat;
-    check = ardoxy.measureTemp();                     // measure temperature
-    if (check == 1){
-      tempInt = ardoxy.readoutTemp();                 // read temperature value from results register
-      tempFloat = tempInt / 1000.00;
-      check = ardoxy.measureDO(channel);                // measure DO on channel i+1
-      if (check == 1){
-        DOInt = ardoxy.readoutDO(channel);              // read DO value from results register
-        DOFloat = DOInt / 1000.00;                      // convert to floating point number
-        if (strcmp(phaseType[phaseIdx], "c") == 0){
-          deltaDO = (DOFloat - DOFloatPrev)*60/(sampInterval/1000.00); // change rate for DO decline per minute
-          counter += 1;
-          if (counter >= rateReCalc){
-            counter = 0;
-            changeRate = (DOSetpoints[phaseIdx] - DOFloat) / (float(durations[phaseIdx]-(loopStart - phaseMarks[phaseIdx])) / 60000.00); // change rate for DO decline per minute
-          }
-          changePID.Compute();
-        } else if (strcmp(phaseType[phaseIdx], "h") == 0){
-          holdPID.Compute();
+    if (ardoxy.measureAll(1, &DOFloat, &tempFloat)) {
+      if (strcmp(phaseType[phaseIdx], "c") == 0){
+        deltaDO = (DOFloat - DOFloatPrev)*60/(sampInterval/1000.00); // change rate for DO decline per minute
+        counter += 1;
+        if (counter >= rateReCalc){
+          counter = 0;
+          changeRate = (DOSetpoints[phaseIdx] - DOFloat) / (float(durations[phaseIdx]-(loopStart - phaseMarks[phaseIdx])) / 60000.00); // change rate for DO decline per minute
         }
-        // Print to serial
-        Serial.print(DOFloat);
-        Serial.print(";");
-        Serial.print(output*200/1000);
-        Serial.print(";");
-        Serial.print(tempFloat);
-        Serial.print(";");
-        Serial.print(DOSetpoints[phaseIdx]);
-        Serial.print(";");
-        Serial.print(phaseIdx+1);
-        Serial.print(";");
-        Serial.println(phaseType[phaseIdx]);
-
-    
-        // operate solenoid
-        // first loop: open all valves that have a nonzero PID output and close those with zero output
-        if (output == 0){
-          if (valveOpen){
-            digitalWrite(relayPin, closed);
-            valveOpen = false;
-          }
-        } else {
-          if (!valveOpen) {
-            digitalWrite(relayPin, open);
-          }
-          if (output * 200 >= (sampInterval - measureDur)){
-            valveOpen = true;
-          } else {
-            delay(output*200);
-            digitalWrite(relayPin, closed);
-            valveOpen = false;
-          }
-        }
-        // wait for next loop iteration
-        elapsed = millis()-loopStart;
-        if (sampInterval > elapsed) {
-          delay(sampInterval - elapsed);          
-        }
+        changePID.Compute();
+      } else if (strcmp(phaseType[phaseIdx], "h") == 0){
+        holdPID.Compute();
       }
-    }
-    if(check != 1){
+      // Print to serial
+      Serial.print(DOFloat);
+      Serial.print(";");
+      Serial.print(output*200/1000);
+      Serial.print(";");
+      Serial.print(tempFloat);
+      Serial.print(";");
+      Serial.print(DOSetpoints[phaseIdx]);
+      Serial.print(";");
+      Serial.print(phaseIdx+1);
+      Serial.print(";");
+      Serial.println(phaseType[phaseIdx]);
+
+      // schedule solenoid valve
+      Ardoxy::scheduleRelays(1, &output, relayPins, sampInterval - measureDur);
+
+      // wait for next loop iteration
+      elapsed = millis()-loopStart;
+      if (sampInterval > elapsed) {
+        delay(sampInterval - elapsed);          
+      }
+    } else {
       Serial.println("Com error. Check connections and send \"1\" to restart.");
       ardoxy.end();
       startTrigger = false;

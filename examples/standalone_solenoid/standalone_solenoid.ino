@@ -138,7 +138,6 @@ char lowDOTank[8];                            // array for tank name in which lo
 Ardoxy ardoxy(Serial1);                       // create ardoxy instance on hardware serial port 1
 
 //# Relay operation #
-double relayArray[3][channelNumber];          // array with relay pin and assigned output values
 double Output[channelNumber];                 // holds output that was calculated by PID library
 
 //# Hardcoded PID setup for 4 control channels #
@@ -209,52 +208,13 @@ void DOCheck() {
   }
 }
 
-//# Toggle relay based on measured airSat values #
+//# Compute PID outputs and schedule relay operation #
 void toggleRelay() {
-  relay1PID.Compute();                                  // compute the output (output * 200 = opening time) based on the input (air saturation) and threshold
+  relay1PID.Compute();
   relay2PID.Compute();
   relay3PID.Compute();
   relay4PID.Compute();
-  
-  for (int k = 0; k < channelNumber; k++) {
-    relayArray[0][k] = relayPin[k];
-    relayArray[1][k] = double(int(Output[k])*200.00);   // PID computes an output between 0 and 50, the multiplicator makes sure that the relay operation time is at least 200ms
-    relayArray[2][k] = DOFloat[k];
-  }
-  double temp[4];                                       // temporary array to sort all channels with the smallest based on the computed output (lowest output first). 
-                                                        // This is necessary as the valves are kept open using the delay()-function which halts all activity. 
-                                                        // With 8 channels, opening one valve after the other is too time consuming. With the opening times sorted, all valves 
-                                                        // can be opened at the same time and then closed one after another.
-  for (int k = 0; k < channelNumber - 1; k++) {         // sort array with lowest difference first
-    for (int m = k + 1; m < channelNumber; m++) {
-      if (relayArray[1][m] < relayArray[1][k]) {
-        temp[0] = relayArray[0][k];                     // store higer value + relayPin in temp array
-        temp[1] = relayArray[1][k];
-        temp[2] = relayArray[2][k];
-        relayArray[0][k] = relayArray[0][m];            // move lower value to position i
-        relayArray[1][k] = relayArray[1][m];
-        relayArray[2][k] = relayArray[2][m];
-        relayArray[0][m] = temp[0];                     // insert higher value at position j
-        relayArray[1][m] = temp[1];                     // now the values at i and j have switched places in the relayArray
-        relayArray[2][m] = temp[2];
-      }
-    }
-  }
-  for (int k = 0; k < channelNumber; k++) {
-    if (relayArray[1][k] > 0){                              // skip the channels that don't have to be operated (output = 0.00)
-      for (int m = k; m < channelNumber; m++) {             // open all other valves
-        digitalWrite(relayArray[0][m], LOW);
-      }
-      if (k == 0) {                                         // close the valve with the lowest output first
-        delay(relayArray[1][k]);
-        digitalWrite(relayArray[0][k], HIGH);
-      }
-      else {
-        delay(relayArray[1][k] - relayArray[1][k - 1]);     // keep the other valves open based on the difference of the output value
-        digitalWrite(relayArray[0][k], HIGH);               // close the valve
-      }
-    }
-  }
+  Ardoxy::scheduleRelays(channelNumber, Output, relayPin, (unsigned long)sampleInterval);
 }
 
 //# Create logfile on SD card (needs global variable "filename")
@@ -472,18 +432,10 @@ void setup() {
   windowSize = (long)round((double)sampleInterval / (200.0 * 2));
     
 //# Set up one PID per channel #
-  relay1PID.SetMode(AUTOMATIC);
-  relay1PID.SetSampleTime(sampleInterval);
-  relay1PID.SetOutputLimits(0, windowSize);
-  relay2PID.SetMode(AUTOMATIC);
-  relay2PID.SetSampleTime(sampleInterval);
-  relay2PID.SetOutputLimits(0, windowSize);
-  relay3PID.SetMode(AUTOMATIC);
-  relay3PID.SetSampleTime(sampleInterval);
-  relay3PID.SetOutputLimits(0, windowSize);
-  relay4PID.SetMode(AUTOMATIC);
-  relay4PID.SetSampleTime(sampleInterval);
-  relay4PID.SetOutputLimits(0, windowSize);
+  Ardoxy::configurePID(relay1PID, Kp[0], Ki[0], Kd[0], sampleInterval, windowSize);
+  Ardoxy::configurePID(relay2PID, Kp[1], Ki[1], Kd[1], sampleInterval, windowSize);
+  Ardoxy::configurePID(relay3PID, Kp[2], Ki[2], Kd[2], sampleInterval, windowSize);
+  Ardoxy::configurePID(relay4PID, Kp[3], Ki[3], Kd[3], sampleInterval, windowSize);
   
 //# Start LCD display, clear serial buffer #
   lcd.begin(16, 2);

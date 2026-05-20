@@ -130,7 +130,6 @@ Ardoxy FireSting1(Serial1);
 Ardoxy FireSting2(Serial2);
 
 //# Relay operation #
-double relayArray[3][8];
 double Output[8];
 
 //# Hardcoded PID instances (one per logical channel, max 8) #
@@ -197,42 +196,12 @@ void DOCheck() {
   }
 }
 
+//# Compute PID outputs and schedule relay operation #
 void toggleRelay() {
   for (int k = 0; k < channelNumber; k++) {
     allPIDs[k]->Compute();
   }
-
-  for (int k = 0; k < channelNumber; k++) {
-    relayArray[0][k] = relayPin[k];
-    relayArray[1][k] = double(int(Output[k]) * 200.00);
-    relayArray[2][k] = DOFloat[k];
-  }
-
-  double temp[3];
-  for (int k = 0; k < channelNumber - 1; k++) {
-    for (int m = k + 1; m < channelNumber; m++) {
-      if (relayArray[1][m] < relayArray[1][k]) {
-        temp[0] = relayArray[0][k]; temp[1] = relayArray[1][k]; temp[2] = relayArray[2][k];
-        relayArray[0][k] = relayArray[0][m]; relayArray[1][k] = relayArray[1][m]; relayArray[2][k] = relayArray[2][m];
-        relayArray[0][m] = temp[0];          relayArray[1][m] = temp[1];          relayArray[2][m] = temp[2];
-      }
-    }
-  }
-
-  for (int k = 0; k < channelNumber; k++) {
-    if (relayArray[1][k] > 0) {
-      for (int m = k; m < channelNumber; m++) {
-        digitalWrite(relayArray[0][m], LOW);
-      }
-      if (k == 0) {
-        delay(relayArray[1][k]);
-        digitalWrite(relayArray[0][k], HIGH);
-      } else {
-        delay(relayArray[1][k] - relayArray[1][k - 1]);
-        digitalWrite(relayArray[0][k], HIGH);
-      }
-    }
-  }
+  Ardoxy::scheduleRelays(channelNumber, Output, relayPin, (unsigned long)sampleInterval);
 }
 
 void createLogfile() {
@@ -396,9 +365,7 @@ void setup() {
 
 //# Set up PIDs for each active channel #
   for (int i = 0; i < channelNumber; i++) {
-    allPIDs[i]->SetMode(AUTOMATIC);
-    allPIDs[i]->SetSampleTime(sampleInterval);
-    allPIDs[i]->SetOutputLimits(0, windowSize);
+    Ardoxy::configurePID(*allPIDs[i], Kp[i], Ki[i], Kd[i], sampleInterval, windowSize);
   }
 
 //# LCD #

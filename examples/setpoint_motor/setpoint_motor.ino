@@ -57,9 +57,7 @@ double Kd = 0;                                        // coefficient for differe
 //#######################################################################################
 
 // DO measurement
-long DOInt, tempInt;                        // for measurement result
 double DOFloat, tempFloat;                  // measurement result as floating point number
-int check;                                  // numerical indicator of succesful measurement (1: success, 0: no connection, 9: mismatch)
 const int measureDur = 500;                 // duration of measurement in ms (-> during this time, the system is blocked)
 
 // Motor settings
@@ -77,7 +75,6 @@ unsigned long progStart, progEnd;           // ms timestamp of beginning and end
 
 // Switches and logical operators
 bool startTrigger = false;                  // trigger for start of measurement
-bool valveOpen = false;                     // indicator if the solenoid should remain open over one loop iteration
 
 // Instances
 SoftwareSerial mySer(RX, TX);               // serial connection to the Firesting
@@ -105,9 +102,7 @@ void setup() {
   myStepper->setSpeed(10);
 
   // Set up PID control
-  valvePID.SetMode(AUTOMATIC);
-  valvePID.SetSampleTime(sampInterval);
-  valvePID.SetOutputLimits(0, opened);
+  Ardoxy::configurePID(valvePID, Kp, Ki, Kd, sampInterval, opened);
 
   // Print experimental conditions
   Serial.println("------------ Ardoxy measure and control example ------------");
@@ -149,14 +144,7 @@ void loop() {
 
     // If the end of the experiment hasn't been reached...
     if (loopStart <= progEnd){
-      check = ardoxy.measureSeq(1);             // measure sequence on channel 1
-      if(check == 1){
-        tempInt = ardoxy.readoutTemp();  // read temperature value from results register
-        tempFloat = tempInt / 1000.00;
-
-        DOInt = ardoxy.readoutDO(1);      // read DO value from results register
-        DOFloat = DOInt / 1000.00;
-
+      if (ardoxy.measureAll(1, &DOFloat, &tempFloat)) {
         // compute opening state of needle valve (= steps of the motor)
         valvePID.Compute();
 

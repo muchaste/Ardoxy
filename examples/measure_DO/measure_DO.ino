@@ -35,9 +35,7 @@
 unsigned long sampInt = 2000;
 
 // Define variables
-long DOInt, tempInt;                        // for measurement result
 double DOFloat, tempFloat;                  // measurement result as floating point number
-int check;                                  // numerical indicator of succesful measurement (1: success, 0: no connection, 9: mismatch)
 bool startTrigger = false;                  // trigger for start of measurement
 unsigned long loopStart, elapsed;           // ms timestamp of beginning and end of measurement loop
 
@@ -77,15 +75,7 @@ void loop() {
   if (startTrigger) {
     loopStart = millis();                     // get time at beginning of loop
     
-    // measure sequence
-    check = ardoxy.measureSeq(1);
-    if(check == 1){
-      DOInt = ardoxy.readoutDO(1);      // read DO value from results register
-      delay(20);
-      tempInt = ardoxy.readoutTemp();  // read temperature value from results register
-      delay(20);
-      DOFloat = DOInt / 1000.00;              // convert to floating point number
-      tempFloat = tempInt / 1000.00;          // convert to floating point number
+    if (ardoxy.measureAll(1, &DOFloat, &tempFloat)) {
       Serial.print(DOFloat);                  // print to serial
       Serial.print(";");
       Serial.println(tempFloat);

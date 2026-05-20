@@ -62,11 +62,8 @@ double DOSetpoints[channelNumber] = {30};                 // DO as % air saturat
 
 // DO measurement
 double DOFloat[channelNumber];                      // Floating point DO values for each channel
-long DOInt, tempInt;                                // for measurement result of each channel
 double tempFloat;                                   // measurement result as floating point number
-int check;                                          // numerical indicator of succesful measurement (1: success, 0: no connection, 9: mismatch)
 const int closed = HIGH;                            // marks the output on the relay pin, which should close the valve
-const int open = !closed;
 const int measureDur = (channelNumber + 1) * 200;   // duration of measurement in ms (-> during this time, the system is blocked)
 
 // Measurement timing
@@ -75,9 +72,6 @@ unsigned long progStart, progEnd;           // ms timestamp of beginning and end
 
 // Switches and logical operators
 bool startTrigger = false;                  // trigger for start of measurement
-int valveOpen[channelNumber];               // indicator if the solenoid should remain open over one loop iteration
-int idcArray[channelNumber];                // array for indices of the relayPins array
-int idx;                                    // index of currently operated relay
 
 // Instances
 SoftwareSerial mySer(RX, TX);               // serial connection to the Firesting
@@ -103,17 +97,13 @@ void setup() {
   Serial.begin(19200);
   delay(100);
   for (int i = 0; i < channelNumber; i++){
-    valveOpen[i] = 0;
-      
-    // Set up relay pin for channel {channel}
+    // Set up relay pin
     pinMode(relayPins[i], OUTPUT);
     digitalWrite(relayPins[i], closed);
   }
 
   // Set up PID for channel 1
-  valvePID1.SetMode(AUTOMATIC);
-  valvePID1.SetSampleTime(sampInterval);
-  valvePID1.SetOutputLimits(0, windowSize);
+  Ardoxy::configurePID(valvePID1, Kp1, Ki1, Kd1, sampInterval, windowSize);
   Serial.println("------------ Auto-generated Arduino Sketch ------------");
   Serial.print("FireSting channel: ");
   Serial.println(channelNumber);
@@ -160,10 +150,7 @@ void loop() {
           startTrigger = false;
           ardoxy.end();
           Serial.println("Stopped");
-          for (int i = 0; i < channelNumber; i++) {
-            digitalWrite(relayPins[i], closed);
-            valveOpen[i] = 0;
-          }
+          Ardoxy::closeRelays(channelNumber, relayPins);
           break;
     }
   }
@@ -172,115 +159,37 @@ void loop() {
     loopStart = millis();                               // get the time
     // If the end of the experiment hasn't been reached...
     if (loopStart <= progEnd){
-      check = ardoxy.measureTemp();                     // measure temperature
-      if(check == 1){
-        tempInt = ardoxy.readoutTemp();                 // read temperature value from results register
-        tempFloat = tempInt / 1000.00;
+      if (ardoxy.measureAll(channelNumber, DOFloat, &tempFloat)) {
+        // compute opening time of solenoid valve
+        valvePID1.Compute();
+        // Print to serial
         for (int i = 0; i < channelNumber; i++) {
-          check = ardoxy.measureDO(i+1);                // measure DO on channel i+1
-          if(check == 1){
-            DOInt = ardoxy.readoutDO(i+1);              // read DO value from results register
-            DOFloat[i] = DOInt / 1000.00;               // convert to floating point number
-          }
-          else {                                        // If the DO measurement returns with an error
-            for (int i = 0; i < channelNumber; i++) {
-              digitalWrite(relayPins[i], closed);
-            }
-            Serial.println("Com error. Check connections and send \"1\" to restart.");
-            ardoxy.end();
-            startTrigger = false;
-          }
+          Serial.print(DOFloat[i]);
+          Serial.print(";");
+          Serial.print(output[i]*200/1000);
+          Serial.print(";");
         }
-      }
-      else {                                            // If the temp. measurement returns with an error
-        for (int i = 0; i < channelNumber; i++) {
-          digitalWrite(relayPins[i], closed);
+        Serial.println(tempFloat);
+
+        // schedule solenoid valves
+        Ardoxy::scheduleRelays(channelNumber, output, relayPins, sampInterval - measureDur);
+
+        // wait for next loop iteration
+        elapsed = millis()-loopStart;
+        if (sampInterval > elapsed) {
+          delay(sampInterval - elapsed);          
         }
+      } else {
+        Ardoxy::closeRelays(channelNumber, relayPins);
         Serial.println("Com error. Check connections and send \"1\" to restart.");
         ardoxy.end();
         startTrigger = false;
       }
-
-      // compute opening time of solenoid valve
-      valvePID1.Compute();
-      // Print to serial
-      for (int i = 0; i < channelNumber; i++) {
-        Serial.print(DOFloat[i]);
-        Serial.print(";");
-        Serial.print(output[i]*200/1000);
-        Serial.print(";");
-      }
-      Serial.println(tempFloat);
-    
-      // if more than one channel: sort by opening time
-      if (channelNumber > 1) {
-        for (int k = 0; k < channelNumber; k++) {         // sort indices of channels in ascending order of opening time
-          idcArray[k] = channelNumber-1;
-          for (int m = 0; m < channelNumber; m++) {
-            if (output[m] > output[k]) {
-              idcArray[k] -= 1;
-            }
-            else if (output[m] == output[k]){
-              if (m > k){
-                idcArray[k] -= 1;
-              }
-            }
-          }
-        }
-      }
-      else {
-        idcArray[0] = 0;
-      }
-      
-      // operate solenoid
-      // first loop: open all valves that have a nonzero PID output and close those with zero output
-      for (int i = 0; i < channelNumber; i++){
-        if (output[i] == 0){
-          if (valveOpen[i]){
-            digitalWrite(relayPins[i], closed);
-            valveOpen[i] = 0;
-          }
-        }
-        else {
-          if (!valveOpen[i]) {
-            digitalWrite(relayPins[i], open);
-          }
-          if (output[i] * 200 >= (sampInterval - measureDur)){
-            valveOpen[i] = 1;
-          }
-          else {
-            valveOpen[i] = 0;
-          }
-        }
-      }
-      
-      // second loop: close the valves that have shorter opening times than the loop duration
-      for (int i = 0; i < channelNumber; i++){
-        idx = idcArray[i];
-        if((!valveOpen[idx]) && (output[idx] > 0)){
-          if (i == 0) {
-            delay(output[idx]*200);
-            digitalWrite(relayPins[idx], closed);
-          }
-          else {
-            delay((output[idx]*200)-(output[idcArray[i-1]]*200));
-            digitalWrite(relayPins[idx], closed);
-          }
-        }
-      }
-      
-      // wait for next loop iteration
-      elapsed = millis()-loopStart;
-      if (sampInterval > elapsed) {
-        delay(sampInterval - elapsed);          
-      }         
     }
     
     // at the end of the experiment, close all valves and end the experiment
     else { 
-      for (int i = 0; i < channelNumber; i++) {
-        digitalWrite(relayPins[i], closed);
-      }
+      Ardoxy::closeRelays(channelNumber, relayPins);
       Serial.println("End of experiment. Arduino stopps. Send \"1\" to re-start.");
       ardoxy.end();
       startTrigger = false;

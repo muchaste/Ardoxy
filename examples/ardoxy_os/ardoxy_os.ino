@@ -93,93 +93,10 @@ double        doFloatPrev = 0.0;
 int           rateReCalc;
 int           samplesSinceCalc;
 
-// ---- helpers ----------------------------------------------------------------
-
-void closeAllValves() {
-    for (int i = 0; i < nChannels; i++) {
-        digitalWrite(relayPins[i], HIGH);        // HIGH = normally-closed = valve shut
-    }
-}
-
-void configurePIDs() {
-    windowSize = sampInterval / 200;
-    for (int i = 0; i < nChannels; i++) {
-        holdSP[i] = DOSetpoint;
-        valvePIDs[i]->SetTunings(Kp, Ki, Kd);
-        valvePIDs[i]->SetOutputLimits(0, windowSize);
-        valvePIDs[i]->SetSampleTime(sampInterval);
-        valvePIDs[i]->SetMode(AUTOMATIC);
-    }
-    seqRatePID.SetTunings(0, Ki, 0);
-    seqRatePID.SetOutputLimits(0, windowSize);
-    seqRatePID.SetSampleTime(sampInterval);
-}
-
-// Sort channel indices ascending by doOutput, write to sorted[].
-void sortChannelsByOutput(int sorted[]) {
-    for (int i = 0; i < nChannels; i++) sorted[i] = i;
-    for (int i = 0; i < nChannels - 1; i++) {
-        for (int j = i + 1; j < nChannels; j++) {
-            if (doOutput[sorted[j]] < doOutput[sorted[i]]) {
-                int tmp = sorted[i]; sorted[i] = sorted[j]; sorted[j] = tmp;
-            }
-        }
-    }
-}
-
-// Open all valves > 0 simultaneously, close sequentially by time difference.
-// Valves whose open time reaches the cap stay open for the full interval.
-void scheduleValves() {
-    int sorted[MAX_CHANNELS];
-    sortChannelsByOutput(sorted);
-
-    long openTimes[MAX_CHANNELS];
-    bool fullyOpen[MAX_CHANNELS];
-    long measureDur = (long)nChannels * 40 + 500;   // conservative overhead
-    long maxOpenTime = sampInterval - measureDur;
-
-    for (int i = 0; i < nChannels; i++) {
-        openTimes[i] = (long)(doOutput[sorted[i]]) * 200;
-        fullyOpen[i] = (openTimes[i] >= maxOpenTime);
-        if (fullyOpen[i]) openTimes[i] = maxOpenTime;
-    }
-
-    // Open all that have non-zero time
-    for (int i = 0; i < nChannels; i++) {
-        if (openTimes[i] > 0) {
-            digitalWrite(relayPins[sorted[i]], LOW);
-        }
-    }
-
-    // Close sequentially (shortest first); fully-open channels are left open
-    long elapsed = 0;
-    for (int i = 0; i < nChannels; i++) {
-        if (openTimes[i] > 0 && !fullyOpen[i]) {
-            delay(openTimes[i] - elapsed);
-            elapsed = openTimes[i];
-            digitalWrite(relayPins[sorted[i]], HIGH);
-        }
-    }
-}
 
 // ---- measurement + output helpers -------------------------------------------
 
-bool measureAll(float* doVals, float* tempVal) {
-    int result = 1;
-    result &= ardoxy.measureTemp();
-    long rawTemp = ardoxy.readoutTemp();
-    if (rawTemp == 0 && result == 0) return false;
-    *tempVal = rawTemp / 1000.0;
-
-    for (int i = 0; i < nChannels; i++) {
-        result &= ardoxy.measureDO(i + 1);
-        long rawDO = ardoxy.readoutDO(i + 1);
-        doVals[i] = rawDO / 1000.0;
-    }
-    return result != 0;
-}
-
-void emitData(unsigned long ms, float* doVals, float tempVal, float sp, int pidx, char ptype) {
+void emitData(unsigned long ms, double* doVals, double tempVal, float sp, int pidx, char ptype) {
     Serial.print(F("DATA:"));
     Serial.print(ms);
     for (int i = 0; i < nChannels; i++) {
@@ -205,10 +122,10 @@ void emitData(unsigned long ms, float* doVals, float tempVal, float sp, int pidx
 
 void runMeasury() {
     loopStart = millis();
-    float doVals[MAX_CHANNELS];
-    float tempVal;
+    double doVals[MAX_CHANNELS];
+    double tempVal;
 
-    if (!measureAll(doVals, &tempVal)) {
+    if (!ardoxy.measureAll(nChannels, doVals, &tempVal)) {
         Serial.println(F("MSG:Sensor read error"));
         return;
     }
@@ -222,7 +139,7 @@ void runMeasury() {
 
 void runSetpoint() {
     if (millis() > progEnd) {
-        closeAllValves();
+        Ardoxy::closeRelays(nChannels, relayPins);
         ardoxy.end();
         Serial.println(F("DONE"));
         state = IDLE;
@@ -230,12 +147,12 @@ void runSetpoint() {
     }
 
     loopStart = millis();
-    float doVals[MAX_CHANNELS];
-    float tempVal;
+    double doVals[MAX_CHANNELS];
+    double tempVal;
 
-    if (!measureAll(doVals, &tempVal)) {
+    if (!ardoxy.measureAll(nChannels, doVals, &tempVal)) {
         Serial.println(F("MSG:Sensor read error"));
-        closeAllValves();
+        Ardoxy::closeRelays(nChannels, relayPins);
         return;
     }
 
@@ -244,7 +161,7 @@ void runSetpoint() {
         valvePIDs[i]->Compute();
     }
 
-    scheduleValves();
+    Ardoxy::scheduleRelays(nChannels, doOutput, relayPins, sampInterval - ((long)nChannels * 40 + 500));
 
     unsigned long elapsed = millis() - progStart;
     emitData(elapsed, doVals, tempVal, DOSetpoint, 0, 's');
@@ -255,7 +172,7 @@ void runSetpoint() {
 
 void runSequence() {
     if (phaseIdx >= nPhases) {
-        closeAllValves();
+        Ardoxy::closeRelays(nChannels, relayPins);
         ardoxy.end();
         Serial.println(F("DONE"));
         state = IDLE;
@@ -266,7 +183,7 @@ void runSequence() {
     if (millis() > phaseMarks[phaseIdx + 1]) {
         phaseIdx++;
         if (phaseIdx >= nPhases) {
-            closeAllValves();
+            Ardoxy::closeRelays(nChannels, relayPins);
             ardoxy.end();
             Serial.println(F("DONE"));
             state = IDLE;
@@ -282,29 +199,29 @@ void runSequence() {
     char ptype = phaseTypes[phaseIdx];
 
     if (ptype == 'p') {
-        closeAllValves();
+        Ardoxy::closeRelays(nChannels, relayPins);
         long remaining = sampInterval - (long)(millis() - loopStart);
         if (remaining > 0) delay(remaining);
         return;
     }
 
     loopStart = millis();
-    float doVals[MAX_CHANNELS];
-    float tempVal;
+    double doVals[MAX_CHANNELS];
+    double tempVal;
 
-    if (!measureAll(doVals, &tempVal)) {
+    if (!ardoxy.measureAll(nChannels, doVals, &tempVal)) {
         Serial.println(F("MSG:Sensor read error"));
-        closeAllValves();
+        Ardoxy::closeRelays(nChannels, relayPins);
         return;
     }
 
-    float currentDO = doVals[0];   // sequence mode uses channel 0
+    double currentDO = doVals[0];   // sequence mode uses channel 0
 
     if (ptype == 'h') {
         holdSP[0] = phaseSetpoints[phaseIdx];
         doInput[0] = currentDO;
         valvePIDs[0]->Compute();
-        scheduleValves();
+        Ardoxy::scheduleRelays(nChannels, doOutput, relayPins, sampInterval - ((long)nChannels * 40 + 500));
     } else if (ptype == 'c') {
         // Change mode: rate PID on channel 0
         long phaseMsRemaining = (long)(phaseMarks[phaseIdx + 1] - millis());
@@ -321,7 +238,7 @@ void runSequence() {
         seqRateInput = (currentDO - doFloatPrev) * 60.0 / ((float)sampInterval / 1000.0);
         seqRatePID.Compute();
         doOutput[0] = seqRateOutput;
-        scheduleValves();
+        Ardoxy::scheduleRelays(nChannels, doOutput, relayPins, sampInterval - ((long)nChannels * 40 + 500));
     }
 
     doFloatPrev = currentDO;
@@ -354,7 +271,7 @@ void processCommand(char* buf) {
 
         if (strcmp_P(key, PSTR("STOP")) == 0) {
             if (state == RUNNING) {
-                closeAllValves();
+                Ardoxy::closeRelays(nChannels, relayPins);
                 ardoxy.end();
                 state = CONFIGURED;   // config stays valid; allow immediate restart
             }
@@ -372,7 +289,13 @@ void processCommand(char* buf) {
                 pinMode(relayPins[i], OUTPUT);
                 digitalWrite(relayPins[i], HIGH);
             }
-            configurePIDs();
+            windowSize = sampInterval / 200;
+            for (int i = 0; i < nChannels; i++) {
+                holdSP[i] = DOSetpoint;
+                Ardoxy::configurePID(*valvePIDs[i], Kp, Ki, Kd, sampInterval, windowSize);
+            }
+            Ardoxy::configurePID(seqRatePID, 0, Ki, 0, sampInterval, windowSize);
+            seqRatePID.SetMode(MANUAL);
             ardoxy.begin();
 
             progStart = millis();
