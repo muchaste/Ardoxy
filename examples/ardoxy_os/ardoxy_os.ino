@@ -74,9 +74,14 @@ PID valvePID2(&doInput[2], &doOutput[2], &holdSP[2], 10, 1, 0, REVERSE);
 PID valvePID3(&doInput[3], &doOutput[3], &holdSP[3], 10, 1, 0, REVERSE);
 PID* valvePIDs[MAX_CHANNELS] = {&valvePID0, &valvePID1, &valvePID2, &valvePID3};
 
-// One extra PID for change-rate control in sequence mode (channel 0)
-double seqRateInput = 0.0, seqRateOutput = 0.0, seqRateSP = 0.0;
-PID seqRatePID(&seqRateInput, &seqRateOutput, &seqRateSP, 0, 1, 0, REVERSE);
+// Per-channel rate PIDs for change phases in sequence mode
+double seqRateInput[MAX_CHANNELS] = {0,0,0,0};
+double seqRateSP[MAX_CHANNELS]    = {0,0,0,0};
+PID seqRatePID0(&seqRateInput[0], &doOutput[0], &seqRateSP[0], 0, 1, 0, REVERSE);
+PID seqRatePID1(&seqRateInput[1], &doOutput[1], &seqRateSP[1], 0, 1, 0, REVERSE);
+PID seqRatePID2(&seqRateInput[2], &doOutput[2], &seqRateSP[2], 0, 1, 0, REVERSE);
+PID seqRatePID3(&seqRateInput[3], &doOutput[3], &seqRateSP[3], 0, 1, 0, REVERSE);
+PID* seqRatePIDs[MAX_CHANNELS] = {&seqRatePID0, &seqRatePID1, &seqRatePID2, &seqRatePID3};
 
 // ---- serial parsing ---------------------------------------------------------
 char   recvBuf[RECV_BUF];
@@ -89,7 +94,7 @@ int     windowSize;
 // sequence runtime
 int           phaseIdx = 0;
 unsigned long phaseMarks[MAX_PHASES + 1];
-double        doFloatPrev = 0.0;
+double        doFloatPrev[MAX_CHANNELS] = {0,0,0,0};
 int           rateReCalc;
 int           samplesSinceCalc;
 
@@ -120,7 +125,7 @@ void emitData(unsigned long ms, double* doVals, double tempVal, float sp, int pi
 
 // ---- run modes --------------------------------------------------------------
 
-void runMeasury() {
+void runMeasure() {
     loopStart = millis();
     double doVals[MAX_CHANNELS];
     double tempVal;
@@ -215,33 +220,36 @@ void runSequence() {
         return;
     }
 
-    double currentDO = doVals[0];   // sequence mode uses channel 0
-
     if (ptype == 'h') {
-        holdSP[0] = phaseSetpoints[phaseIdx];
-        doInput[0] = currentDO;
-        valvePIDs[0]->Compute();
+        for (int i = 0; i < nChannels; i++) {
+            holdSP[i] = phaseSetpoints[phaseIdx];
+            doInput[i] = doVals[i];
+            valvePIDs[i]->Compute();
+        }
         Ardoxy::scheduleRelays(nChannels, doOutput, relayPins, sampInterval - ((long)nChannels * 40 + 500));
     } else if (ptype == 'c') {
-        // Change mode: rate PID on channel 0
+        // Change mode: per-channel rate PIDs
         long phaseMsRemaining = (long)(phaseMarks[phaseIdx + 1] - millis());
         float durationMinRemaining = phaseMsRemaining / 60000.0;
         if (durationMinRemaining < 0.01) durationMinRemaining = 0.01;
 
         samplesSinceCalc++;
         rateReCalc = (int)round(60000.0 / sampInterval);
-        if (samplesSinceCalc >= rateReCalc || samplesSinceCalc == 1) {
-            seqRateSP = (phaseSetpoints[phaseIdx] - currentDO) / durationMinRemaining;
-            samplesSinceCalc = 0;
+        bool doRateRecalc = (samplesSinceCalc >= rateReCalc || samplesSinceCalc == 1);
+        for (int i = 0; i < nChannels; i++) {
+            if (doRateRecalc) {
+                seqRateSP[i] = (phaseSetpoints[phaseIdx] - doVals[i]) / durationMinRemaining;
+            }
+            seqRateInput[i] = (doVals[i] - doFloatPrev[i]) * 60.0 / ((float)sampInterval / 1000.0);
+            seqRatePIDs[i]->Compute();
         }
-
-        seqRateInput = (currentDO - doFloatPrev) * 60.0 / ((float)sampInterval / 1000.0);
-        seqRatePID.Compute();
-        doOutput[0] = seqRateOutput;
+        if (doRateRecalc) samplesSinceCalc = 0;
         Ardoxy::scheduleRelays(nChannels, doOutput, relayPins, sampInterval - ((long)nChannels * 40 + 500));
     }
 
-    doFloatPrev = currentDO;
+    for (int i = 0; i < nChannels; i++) {
+        doFloatPrev[i] = doVals[i];
+    }
 
     unsigned long elapsed = millis() - progStart;
     emitData(elapsed, doVals, tempVal, phaseSetpoints[phaseIdx], phaseIdx, ptype);
@@ -294,8 +302,10 @@ void processCommand(char* buf) {
                 holdSP[i] = DOSetpoint;
                 Ardoxy::configurePID(*valvePIDs[i], Kp, Ki, Kd, sampInterval, windowSize);
             }
-            Ardoxy::configurePID(seqRatePID, 0, Ki, 0, sampInterval, windowSize);
-            seqRatePID.SetMode(MANUAL);
+            for (int i = 0; i < nChannels; i++) {
+                Ardoxy::configurePID(*seqRatePIDs[i], 0, Ki, 0, sampInterval, windowSize);
+                seqRatePIDs[i]->SetMode(MANUAL);
+            }
             ardoxy.begin();
 
             progStart = millis();
@@ -310,12 +320,13 @@ void processCommand(char* buf) {
                 for (int i = 0; i < nPhases; i++) {
                     phaseMarks[i + 1] = phaseMarks[i] + phaseDurations[i];
                 }
-                holdSP[0] = phaseSetpoints[0];
-                seqRateSP = 0.0;
+                for (int i = 0; i < nChannels; i++) {
+                    holdSP[i] = phaseSetpoints[0];
+                    seqRateSP[i] = 0.0;
+                    doFloatPrev[i] = 0.0;
+                    seqRatePIDs[i]->SetMode(AUTOMATIC);
+                }
                 samplesSinceCalc = 0;
-                doFloatPrev = 0.0;
-                seqRatePID.SetMode(AUTOMATIC);
-                valvePIDs[0]->SetMode(AUTOMATIC);
             }
 
             state = RUNNING;
@@ -416,7 +427,7 @@ void loop() {
     if (state != RUNNING) return;
 
     if (mode == MEASURE) {
-        runMeasury();
+        runMeasure();
     } else if (mode == SETPOINT) {
         runSetpoint();
     } else if (mode == SEQUENCE) {
