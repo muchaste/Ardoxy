@@ -37,6 +37,7 @@ def serial_reader():
                 msg_queue.put(line)
         except Exception:
             break
+    msg_queue.put("__DISCONNECTED__")
 
 
 def send(line: str):
@@ -47,6 +48,12 @@ def send(line: str):
 
 def send_and_ack(line: str, timeout: float = 2.0) -> bool:
     """Send a command and block until ACK:OK or ACK:ERR is received."""
+    # Drain any stale messages before sending so we don't consume an old ACK.
+    while not msg_queue.empty():
+        try:
+            msg_queue.get_nowait()
+        except queue.Empty:
+            break
     send(line)
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -126,6 +133,8 @@ def build_connect_tab(nb):
             status_var.set("Connected")
             status_lbl.configure(foreground="green")
             conn_btn.configure(text="Disconnect", command=do_disconnect)
+            if configure_tab_ref:
+                configure_tab_ref._send_btn.configure(state="normal")
             # ask state
             send("CMD:STATUS")
         except serial.SerialException as exc:
@@ -145,13 +154,19 @@ def build_connect_tab(nb):
         status_lbl.configure(foreground="red")
         conn_btn.configure(text="Connect", command=do_connect)
         arduino_state_var.set("—")
+        if configure_tab_ref:
+            configure_tab_ref._send_btn.configure(state="disabled")
 
     conn_btn.configure(command=do_connect)
     refresh_ports()
 
-    # expose for poll_queue
+    # expose for poll_queue and disconnect handler
     frame._arduino_state_var = arduino_state_var
     frame._msg_lbl = msg_lbl
+    frame._status_var = status_var
+    frame._status_lbl = status_lbl
+    frame._conn_btn = conn_btn
+    frame._do_connect = do_connect
     return frame
 
 
@@ -255,17 +270,36 @@ def build_configure_tab(nb):
         x, y, w, h = phase_tree.bbox(item, col_id)
         vals = list(phase_tree.item(item, "values"))
         var = tk.StringVar(value=vals[col_idx])
-        edit_entry = ttk.Entry(phase_tree, textvariable=var, width=12)
-        edit_entry.place(x=x, y=y, width=w, height=h)
-        edit_entry.focus()
 
-        def commit(e=None):
-            vals[col_idx] = var.get()
-            phase_tree.item(item, values=vals)
-            edit_entry.destroy()
+        if col_idx == 3:
+            # Phase type column: combobox with descriptive labels
+            TYPE_OPTIONS = ["h — hold", "c — change", "p — pause"]
+            type_map = {"h": "h — hold", "c": "c — change", "p": "p — pause"}
+            var.set(type_map.get(vals[col_idx], vals[col_idx]))
+            edit_widget = ttk.Combobox(phase_tree, textvariable=var,
+                                       values=TYPE_OPTIONS, state="readonly", width=14)
+            edit_widget.place(x=x, y=y, width=w, height=h)
+            edit_widget.focus()
 
-        edit_entry.bind("<Return>", commit)
-        edit_entry.bind("<FocusOut>", commit)
+            def commit_type(e=None):
+                vals[col_idx] = var.get()[0]  # store only the letter (h/c/p)
+                phase_tree.item(item, values=vals)
+                edit_widget.destroy()
+
+            edit_widget.bind("<<ComboboxSelected>>", commit_type)
+            edit_widget.bind("<FocusOut>", commit_type)
+        else:
+            edit_widget = ttk.Entry(phase_tree, textvariable=var, width=12)
+            edit_widget.place(x=x, y=y, width=w, height=h)
+            edit_widget.focus()
+
+            def commit(e=None):
+                vals[col_idx] = var.get()
+                phase_tree.item(item, values=vals)
+                edit_widget.destroy()
+
+            edit_widget.bind("<Return>", commit)
+            edit_widget.bind("<FocusOut>", commit)
 
     phase_tree.bind("<Double-1>", edit_phase)
     ttk.Button(btn_row, text="Add phase", command=add_phase).pack(side="left", padx=4)
@@ -287,7 +321,7 @@ def build_configure_tab(nb):
     mode_var.trace_add("write", on_mode_change)
     on_mode_change()
 
-    send_btn = ttk.Button(frame, text="Send Config to Arduino")
+    send_btn = ttk.Button(frame, text="Send Config to Arduino", state="disabled")
     send_btn.grid(row=6, column=0, columnspan=2, pady=10, sticky="w")
     cfg_status_var = tk.StringVar(value="")
     ttk.Label(frame, textvariable=cfg_status_var, foreground="blue").grid(
@@ -321,34 +355,43 @@ def build_configure_tab(nb):
         cfg_status_var.set("Sending…")
         frame.update_idletasks()
 
+        cmd_count = [0]
+
+        def ack(cmd):
+            cmd_count[0] += 1
+            cfg_status_var.set(f"Sending {cmd_count[0]}…")
+            frame.update_idletasks()
+            return send_and_ack(cmd)
+
         ok = True
-        ok = ok and send_and_ack(f"CFG:MODE:{m}")
-        ok = ok and send_and_ack(f"CFG:NCHANNELS:{nch}")
+        ok = ok and ack(f"CFG:MODE:{m}")
+        ok = ok and ack(f"CFG:NCHANNELS:{nch}")
         for i in range(nch):
-            ok = ok and send_and_ack(f"CFG:RELAY:{i}:{relay_pins[i]}")
-        ok = ok and send_and_ack(f"CFG:INTERVAL:{interval}")
-        ok = ok and send_and_ack(f"CFG:DURATION:{duration}")
+            ok = ok and ack(f"CFG:RELAY:{i}:{relay_pins[i]}")
+        ok = ok and ack(f"CFG:INTERVAL:{interval}")
+        ok = ok and ack(f"CFG:DURATION:{duration}")
 
         if m == "SETPOINT":
-            ok = ok and send_and_ack(f"CFG:SETPOINT:{sp_var.get()}")
-            ok = ok and send_and_ack(f"CFG:KP:{kp_var.get()}")
-            ok = ok and send_and_ack(f"CFG:KI:{ki_var.get()}")
-            ok = ok and send_and_ack(f"CFG:KD:{kd_var.get()}")
+            ok = ok and ack(f"CFG:SETPOINT:{sp_var.get()}")
+            ok = ok and ack(f"CFG:KP:{kp_var.get()}")
+            ok = ok and ack(f"CFG:KI:{ki_var.get()}")
+            ok = ok and ack(f"CFG:KD:{kd_var.get()}")
 
         elif m == "SEQUENCE":
-            ok = ok and send_and_ack(f"CFG:KP:{seq_kp_var.get()}")
-            ok = ok and send_and_ack(f"CFG:KI:{seq_ki_var.get()}")
-            ok = ok and send_and_ack(f"CFG:KD:{seq_kd_var.get()}")
+            ok = ok and ack(f"CFG:KP:{seq_kp_var.get()}")
+            ok = ok and ack(f"CFG:KI:{seq_ki_var.get()}")
+            ok = ok and ack(f"CFG:KD:{seq_kd_var.get()}")
             rows = phase_tree.get_children()
-            ok = ok and send_and_ack(f"CFG:NPHASES:{len(rows)}")
+            ok = ok and ack(f"CFG:NPHASES:{len(rows)}")
             for idx, iid in enumerate(rows):
                 vals = phase_tree.item(iid, "values")
-                ok = ok and send_and_ack(
+                ok = ok and ack(
                     f"CFG:PHASE:{idx}:{vals[1]}:{vals[2]}:{vals[3]}")
 
         cfg_status_var.set("Config sent ✓" if ok else "Config FAILED ✗")
 
     send_btn.configure(command=validate_and_send)
+    frame._send_btn = send_btn
     return frame
 
 
@@ -371,6 +414,9 @@ def build_run_tab(nb):
     info_var = tk.StringVar(value="Idle")
     ttk.Label(top_bar, textvariable=info_var, foreground="grey").pack(
         side="left", padx=8)
+    auto_scroll_var = tk.BooleanVar(value=True)
+    ttk.Checkbutton(top_bar, text="Auto-scroll (600s)",
+                    variable=auto_scroll_var).pack(side="right", padx=8)
 
     # ── chart ─────────────────────────────────────────────────────────────────
     fig = Figure(figsize=(9, 3.8), dpi=96, tight_layout=True)
@@ -440,7 +486,7 @@ def build_run_tab(nb):
         d["do"] = [float(parts[idx + i]) for i in range(nch)]
         idx += nch
         d["temp"] = float(parts[idx]);  idx += 1
-        d["outputs"] = [parts[idx + i] for i in range(nch)];  idx += nch
+        d["outputs"] = [float(parts[idx + i]) for i in range(nch)];  idx += nch
         d["setpoint"] = float(parts[idx]);  idx += 1
         d["phase"] = parts[idx];  idx += 1
         d["ptype"] = parts[idx].strip() if idx < len(parts) else "?"
@@ -463,6 +509,8 @@ def build_run_tab(nb):
 
         ax_do.relim(); ax_do.autoscale_view()
         ax_temp.relim(); ax_temp.autoscale_view()
+        if auto_scroll_var.get() and t_buf and t_buf[-1] > 600:
+            ax_do.set_xlim(t_buf[-1] - 600, t_buf[-1] + 10)
         canvas.draw_idle()
 
         do_str = [f"{v:.2f}" for v in d["do"]]
@@ -472,7 +520,7 @@ def build_run_tab(nb):
             f"{d['time_s']:.1f}",
             *do_str,
             f"{d['temp']:.2f}",
-            ", ".join(d["outputs"]),
+            ", ".join(f"{v:.1f}" for v in d["outputs"]),
             f"{d['setpoint']:.1f}",
             d["phase"],
             d["ptype"]
@@ -489,7 +537,7 @@ def build_run_tab(nb):
             **{f"DO_ch{i+1}": (d["do"][i] if i < len(d["do"]) else "")
                for i in range(4)},
             "temp": d["temp"],
-            "outputs": ", ".join(d["outputs"]),
+            "outputs": ", ".join(f"{v:.1f}" for v in d["outputs"]),
             "setpoint": d["setpoint"],
             "phase": d["phase"],
             "ptype": d["ptype"]
@@ -526,7 +574,8 @@ def build_run_tab(nb):
         path = filedialog.asksaveasfilename(
             defaultextension=".csv",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
-            title="Save data as CSV"
+            title="Save data as CSV",
+            initialfile=f"ardoxy_data_{time.strftime('%Y%m%d_%H%M%S')}.csv"
         )
         if not path:
             return
@@ -548,6 +597,7 @@ def build_run_tab(nb):
 # ── main queue polling ────────────────────────────────────────────────────────
 
 connect_tab_ref = None
+configure_tab_ref = None
 run_tab_ref = None
 
 
@@ -577,14 +627,33 @@ def handle_line(line: str):
             run_tab_ref._stop_btn.configure(state="disabled")
             run_tab_ref._info_var.set("Finished")
 
+    elif line == "__DISCONNECTED__":
+        global connected
+        connected = False
+        running = False
+        if connect_tab_ref:
+            connect_tab_ref._status_var.set("Disconnected")
+            connect_tab_ref._status_lbl.configure(foreground="red")
+            connect_tab_ref._conn_btn.configure(text="Connect",
+                                                command=connect_tab_ref._do_connect)
+        if configure_tab_ref:
+            configure_tab_ref._send_btn.configure(state="disabled")
+        if run_tab_ref:
+            run_tab_ref._start_btn.configure(state="normal")
+            run_tab_ref._stop_btn.configure(state="disabled")
+            run_tab_ref._info_var.set("Connection lost")
+
 
 def poll_queue(root):
-    while not msg_queue.empty():
-        try:
-            line = msg_queue.get_nowait()
-            handle_line(line)
-        except queue.Empty:
-            break
+    try:
+        while not msg_queue.empty():
+            try:
+                line = msg_queue.get_nowait()
+                handle_line(line)
+            except queue.Empty:
+                break
+    except Exception:
+        pass
     root.after(100, poll_queue, root)
 
 
@@ -598,7 +667,7 @@ nb = ttk.Notebook(root)
 nb.pack(fill="both", expand=True, padx=6, pady=6)
 
 connect_tab_ref = build_connect_tab(nb)
-build_configure_tab(nb)
+configure_tab_ref = build_configure_tab(nb)
 run_tab_ref = build_run_tab(nb)
 
 root.after(100, poll_queue, root)
