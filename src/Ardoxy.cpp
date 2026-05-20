@@ -6,6 +6,7 @@
 #include <Arduino.h>
 #include <Ardoxy.h>
 #include <SoftwareSerial.h>
+#include <PID_v1.h>
 
 // Begin function to establish connection and set baud rate to 19200 if necessary
 void Ardoxy::begin()
@@ -453,4 +454,13 @@ void Ardoxy::closeRelays(int nChannels, const int relayPins[]) {
   for (int i = 0; i < nChannels; i++) {
     digitalWrite(relayPins[i], HIGH);
   }
+}
+
+// Configure a PID instance with Ardoxy's standard conventions.
+// outputLimit is typically sampInterval/200 (relay) or stepsPerRevolution*1.5 (motor).
+void Ardoxy::configurePID(PID& pid, double kp, double ki, double kd, unsigned long sampInterval, int outputLimit) {
+  pid.SetTunings(kp, ki, kd);
+  pid.SetOutputLimits(0, outputLimit);
+  pid.SetSampleTime((int)sampInterval);
+  pid.SetMode(AUTOMATIC);
 }

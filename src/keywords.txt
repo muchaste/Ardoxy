@@ -21,6 +21,10 @@ readoutDO	KEYWORD2
 readoutTemp	KEYWORD2
 end 		KEYWORD2
 calcDays	KEYWORD2
+measureAll	KEYWORD2
+scheduleRelays	KEYWORD2
+closeRelays	KEYWORD2
+configurePID	KEYWORD2
 #######################################
 # Instances 	(KEYWORD2)
 #######################################

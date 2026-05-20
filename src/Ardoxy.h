@@ -9,6 +9,8 @@
 #include "Arduino.h"
 #include <SoftwareSerial.h>
 
+class PID;  // forward declaration — allows configurePID without pulling in PID_v1.h
+
 #define numChars 60
 #define ARDOXY_MAX_CHANNELS 8
 
@@ -32,6 +34,7 @@ class Ardoxy
     int measureAll(int nChannels, double doVals[], double* tempVal);
     static void scheduleRelays(int nChannels, double outputs[], const int relayPins[], unsigned long maxOpenMs);
     static void closeRelays(int nChannels, const int relayPins[]);
+    static void configurePID(PID& pid, double kp, double ki, double kd, unsigned long sampInterval, int outputLimit);
 
   private:
     HardwareSerial* hwStream;
