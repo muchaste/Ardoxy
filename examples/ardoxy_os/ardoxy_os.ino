@@ -17,11 +17,13 @@
       CFG:PHASE:<idx>:<sp>:<min>:<t>  t = c|h|p
       CMD:START
       CMD:STOP
+      CMD:PAUSE
+      CMD:RESUME
       CMD:STATUS
     Arduino -> PC:
       ACK:OK
       ACK:ERR:<msg>
-      STATUS:<IDLE|CONFIGURED|RUNNING>
+      STATUS:<IDLE|CONFIGURED|RUNNING|PAUSED>
       DATA:<ms>,<do_ch1[,do_ch2...]>,<temp>,<output[,output...]>,<sp>,<phase>,<ptype>
       MSG:<text>
       DONE
@@ -42,7 +44,7 @@ SoftwareSerial firestingSerial(RX_PIN, TX_PIN);
 Ardoxy ardoxy(firestingSerial);
 
 // ---- state ------------------------------------------------------------------
-typedef enum { IDLE, CONFIGURED, RUNNING } State;
+typedef enum { IDLE, CONFIGURED, RUNNING, PAUSED } State;
 typedef enum { MEASURE, SETPOINT, SEQUENCE } Mode;
 
 State state = IDLE;
@@ -89,6 +91,7 @@ int    recvIdx = 0;
 
 // ---- runtime state ----------------------------------------------------------
 unsigned long progStart, progEnd, loopStart;
+unsigned long pauseStart = 0;
 int     windowSize;
 
 // sequence runtime
@@ -271,19 +274,50 @@ void processCommand(char* buf) {
 
         if (strcmp_P(key, PSTR("STATUS")) == 0) {
             Serial.print(F("STATUS:"));
-            if (state == IDLE)       Serial.println(F("IDLE"));
+            if (state == IDLE)            Serial.println(F("IDLE"));
             else if (state == CONFIGURED) Serial.println(F("CONFIGURED"));
-            else                     Serial.println(F("RUNNING"));
+            else if (state == PAUSED)     Serial.println(F("PAUSED"));
+            else                          Serial.println(F("RUNNING"));
             return;
         }
 
         if (strcmp_P(key, PSTR("STOP")) == 0) {
-            if (state == RUNNING) {
+            if (state == RUNNING || state == PAUSED) {
                 Ardoxy::closeRelays(nChannels, relayPins);
                 ardoxy.end();
                 state = CONFIGURED;   // config stays valid; allow immediate restart
             }
             Serial.println(F("ACK:OK"));
+            return;
+        }
+
+        if (strcmp_P(key, PSTR("PAUSE")) == 0) {
+            if (state == RUNNING) {
+                Ardoxy::closeRelays(nChannels, relayPins);
+                pauseStart = millis();
+                state = PAUSED;
+                Serial.println(F("ACK:OK"));
+                Serial.println(F("MSG:Paused"));
+            } else {
+                Serial.println(F("ACK:ERR:Not running"));
+            }
+            return;
+        }
+
+        if (strcmp_P(key, PSTR("RESUME")) == 0) {
+            if (state == PAUSED) {
+                unsigned long pausedFor = millis() - pauseStart;
+                progStart += pausedFor;
+                progEnd   += pausedFor;
+                for (int i = 0; i <= nPhases; i++) {
+                    phaseMarks[i] += pausedFor;
+                }
+                state = RUNNING;
+                Serial.println(F("ACK:OK"));
+                Serial.println(F("MSG:Running"));
+            } else {
+                Serial.println(F("ACK:ERR:Not paused"));
+            }
             return;
         }
 
@@ -338,7 +372,7 @@ void processCommand(char* buf) {
     }
 
     if (strcmp_P(cat, PSTR("CFG")) == 0) {
-        if (state == RUNNING) {
+        if (state == RUNNING || state == PAUSED) {
             Serial.println(F("ACK:ERR:Running"));
             return;
         }

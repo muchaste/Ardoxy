@@ -23,6 +23,7 @@ serial_thread = None
 msg_queue = queue.Queue()
 data_rows = []          # list of dicts
 running = False
+paused = False
 connected = False
 
 # ── serial I/O ────────────────────────────────────────────────────────────────
@@ -406,6 +407,8 @@ def build_run_tab(nb):
 
     start_btn = ttk.Button(top_bar, text="▶  Start")
     start_btn.pack(side="left", padx=4)
+    pause_btn = ttk.Button(top_bar, text="⏸  Pause", state="disabled")
+    pause_btn.pack(side="left", padx=4)
     stop_btn = ttk.Button(top_bar, text="■  Stop", state="disabled")
     stop_btn.pack(side="left", padx=4)
     ttk.Button(top_bar, text="Save CSV", command=lambda: save_csv()).pack(
@@ -543,28 +546,59 @@ def build_run_tab(nb):
             "ptype": d["ptype"]
         })
 
+    def set_state_stopped(msg="Stopped"):
+        global running, paused
+        running = False
+        paused = False
+        start_btn.configure(text="▶  Start", command=do_start, state="normal")
+        pause_btn.configure(state="disabled")
+        stop_btn.configure(state="disabled")
+        info_var.set(msg)
+
+    def set_state_running():
+        global running, paused
+        running = True
+        paused = False
+        start_btn.configure(state="disabled")
+        pause_btn.configure(state="normal")
+        stop_btn.configure(state="normal")
+        info_var.set("Running…")
+
+    def set_state_paused():
+        global running, paused
+        running = False
+        paused = True
+        start_btn.configure(text="▶  Resume", command=do_resume, state="normal")
+        pause_btn.configure(state="disabled")
+        stop_btn.configure(state="normal")
+        info_var.set("Paused")
+
     def do_start():
-        global running
         if not connected or not ser:
             messagebox.showerror("Error", "Not connected.")
             return
         clear_chart()
         data_rows.clear()
         send("CMD:START")
-        running = True
-        start_btn.configure(state="disabled")
-        stop_btn.configure(state="normal")
-        info_var.set("Running…")
+        set_state_running()
+
+    def do_resume():
+        if not connected or not ser:
+            messagebox.showerror("Error", "Not connected.")
+            return
+        send("CMD:RESUME")
+        set_state_running()
+
+    def do_pause():
+        send("CMD:PAUSE")
+        set_state_paused()
 
     def do_stop():
-        global running
-        running = False
         send("CMD:STOP")
-        start_btn.configure(state="normal")
-        stop_btn.configure(state="disabled")
-        info_var.set("Stopped")
+        set_state_stopped()
 
     start_btn.configure(command=do_start)
+    pause_btn.configure(command=do_pause)
     stop_btn.configure(command=do_stop)
 
     def save_csv():
@@ -590,7 +624,10 @@ def build_run_tab(nb):
     frame._update_chart_and_table = update_chart_and_table
     frame._info_var = info_var
     frame._start_btn = start_btn
+    frame._pause_btn = pause_btn
     frame._stop_btn = stop_btn
+    frame._set_state_stopped = set_state_stopped
+    frame._set_state_paused = set_state_paused
     return frame
 
 
@@ -620,17 +657,17 @@ def handle_line(line: str):
             connect_tab_ref._msg_lbl.configure(text=msg)
 
     elif line == "DONE":
-        global running
+        global running, paused
         running = False
+        paused = False
         if run_tab_ref:
-            run_tab_ref._start_btn.configure(state="normal")
-            run_tab_ref._stop_btn.configure(state="disabled")
-            run_tab_ref._info_var.set("Finished")
+            run_tab_ref._set_state_stopped("Finished")
 
     elif line == "__DISCONNECTED__":
         global connected
         connected = False
         running = False
+        paused = False
         if connect_tab_ref:
             connect_tab_ref._status_var.set("Disconnected")
             connect_tab_ref._status_lbl.configure(foreground="red")
@@ -639,9 +676,7 @@ def handle_line(line: str):
         if configure_tab_ref:
             configure_tab_ref._send_btn.configure(state="disabled")
         if run_tab_ref:
-            run_tab_ref._start_btn.configure(state="normal")
-            run_tab_ref._stop_btn.configure(state="disabled")
-            run_tab_ref._info_var.set("Connection lost")
+            run_tab_ref._set_state_stopped("Connection lost")
 
 
 def poll_queue(root):
