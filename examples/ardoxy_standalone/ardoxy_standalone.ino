@@ -1,8 +1,9 @@
 /*
-  ardoxy_standalone.ino
+  ardoxy_standalone.ino  — v2
   Ardoxy Standalone Sketch — upload once, configure via ardoxy_gui.py (Standalone Mode),
   then run autonomously with SD card logging and LCD display.
   Power-outage recovery is automatic via STATE.TXT on the SD card.
+  Each channel has its own independent mode and optional start time.
 
   Hardware:
     - Arduino MEGA2560
@@ -13,35 +14,43 @@
     - Relay module on digital output pins (default: 46, 48, 50, 52, 22, 24, 26, 28)
 
   Protocol (USB serial, 19200 baud, newline-terminated):
-    PC -> Arduino:
-      CFG:MODE:<MEASURE|SETPOINT|SEQUENCE>
+    PC -> Arduino  — shared hardware config —
       CFG:NCHANNELS:<1-8>
       CFG:SENSORS:<1|2>              number of FireSting sensors (default 1)
       CFG:S1CHANNELS:<n>             channels on sensor 1; required when SENSORS=2
       CFG:RELAY:<ch>:<pin>           ch = 0-based
       CFG:INTERVAL:<ms>
-      CFG:DURATION:<minutes>         SETPOINT total experiment duration
-      CFG:TANKID:<ch>:<id>           up to 6 chars; used in SD log header + LCD
-      CFG:SETPOINT:<float>           SETPOINT mode setpoint
-      CFG:KP:<ch>:<float>            per-channel PID gains (ch = 0-based)
+      CFG:TANKID:<ch>:<id>           up to 6 chars
+      CFG:KP:<ch>:<float>            per-channel valve PID gains (ch = 0-based)
       CFG:KI:<ch>:<float>
       CFG:KD:<ch>:<float>
-      CFG:NPHASES:<n>                SEQUENCE mode
-      CFG:PHASE:<idx>:<sp>:<dur_d>:<dur_h>:<dur_m>:<type>[:<min_sp>:<max_sp>:<peak_h>]
+
+    PC -> Arduino  — per-channel mode config —
+      CFG:CH:<ch>:MODE:<MEASURE|SETPOINT|SEQUENCE>
+      CFG:CH:<ch>:START:<Y>:<M>:<D>:<h>:<m>:<s>   (0:0:0:0:0:0 = start immediately)
+      CFG:CH:<ch>:SETPOINT:<float>   SETPOINT mode target DO
+      CFG:CH:<ch>:DURATION:<minutes> SETPOINT duration in minutes
+      CFG:CH:<ch>:NPHASES:<n>        number of phases (1..MAX_PHASES)
+      CFG:CH:<ch>:PHASE:<idx>:<sp>:<dur_d>:<dur_h>:<dur_m>:<type>[:<min_sp>:<max_sp>:<peak_h>]
         type: h=hold  c=change  p=pause  d=daily-cycle
-        min_sp/max_sp/peak_h only required when type == 'd'
+        min_sp/max_sp/peak_h required only when type == 'd'
+
+    PC -> Arduino  — commands —
       CMD:START
       CMD:STOP
       CMD:PAUSE
       CMD:RESUME
       CMD:STATUS
       CMD:SAVECONFIG                 write current config to CONFIG.TXT on SD
-      CMD:SETRTC:<Y>:<M>:<D>:<h>:<m>:<s>   set RTC from PC time
+      CMD:SETRTC:<Y>:<M>:<D>:<h>:<m>:<s>
+
     Arduino -> PC:
       ACK:OK
       ACK:ERR:<msg>
       STATUS:<IDLE|CONFIGURED|RUNNING|PAUSED>
-      DATA:<elapsed_ms>,<do_ch1[,do_ch2...]>,<temp>,<output[,output...]>,<sp>,<phase>,<ptype>
+      STATUS:CH:<ch>:<statusStr>:<phaseIdx>:<do>:<sp>
+        statusStr: MEASURE | SETPOINT | SEQUENCE | WAITING-MEASURING | DONE
+      DATA:<elapsed_ms>,<do_ch0[,do_ch1...]>,<temp1>[,<temp2>],<out_ms_ch0[,...]>
       MSG:<text>
       DONE
 
@@ -54,6 +63,9 @@
     1. Wait 10 s for any serial byte (GUI config session).
     2. If no serial input: load CONFIG.TXT → restore STATE.TXT (power-outage recovery)
        or start fresh. If CONFIG.TXT is absent, wait for serial config.
+
+  Note on N2-only control: DO can only be decreased by bubbling N2; passive increase
+  occurs through mixing. REVERSE PID ensures output=0 when DO < setpoint (no N2).
 */
 
 #include <Ardoxy.h>
@@ -66,13 +78,13 @@
 
 #define WHITE        0x7
 #define MAX_CHANNELS 8
-#define MAX_PHASES   10
+#define MAX_PHASES   6          // phases per channel (was 10 global in v1)
 #define RECV_BUF     96
-#define CHIP_SELECT  10    // Adafruit datalogger shield
+#define CHIP_SELECT  10         // Adafruit datalogger shield
 
 // ─── hardware instances ───────────────────────────────────────────────────────
 Ardoxy              ardoxy(Serial1);          // FireSting 1 on Serial1 (MEGA pins 18/19)
-Ardoxy              ardoxy2(Serial2);         // FireSting 2 on Serial2 (MEGA pins 16/17) — 2-sensor mode
+Ardoxy              ardoxy2(Serial2);         // FireSting 2 on Serial2 (MEGA pins 16/17)
 RTC_PCF8523         RTC;
 SdFs                SD;
 FsFile              logFile;
@@ -80,31 +92,42 @@ Adafruit_RGBLCDShield lcd = Adafruit_RGBLCDShield();
 
 // ─── state machine ────────────────────────────────────────────────────────────
 typedef enum { IDLE, CONFIGURED, RUNNING, PAUSED } State;
-typedef enum { MEASURE, SETPOINT, SEQUENCE } Mode;
 State state = IDLE;
-Mode  mode  = MEASURE;
 
-// ─── config ───────────────────────────────────────────────────────────────────
-int    nChannels          = 1;
-int    nSensors           = 1;           // 1 or 2 FireSting sensors
-int    s1Channels         = 1;           // channels on sensor 1 (= nChannels when nSensors == 1)
+// ─── per-channel mode ─────────────────────────────────────────────────────────
+enum ChMode : uint8_t { CH_MEASURE = 0, CH_SETPOINT = 1, CH_SEQUENCE = 2 };
+
+// ─── shared hardware config ───────────────────────────────────────────────────
+int    nChannels                 = 1;
+int    nSensors                  = 1;
+int    s1Channels                = 1;
 int    relayPins[MAX_CHANNELS]   = {46, 48, 50, 52, 22, 24, 26, 28};
-long   sampInterval       = 30000UL;          // ms
-long   experimentDuration = 1440;             // minutes (SETPOINT mode)
-float  DOSetpoint         = 30.0;
-float  Kp[MAX_CHANNELS]   = {10, 10, 10, 10, 10, 10, 10, 10};
-float  Ki[MAX_CHANNELS]   = { 1,  1,  1,  1,  1,  1,  1,  1};
-float  Kd[MAX_CHANNELS]   = { 0,  0,  0,  0,  0,  0,  0,  0};
-char   tankID[MAX_CHANNELS][7] = {"CH1","CH2","CH3","CH4","CH5","CH6","CH7","CH8"};
+long   sampInterval              = 30000UL;
+float  Kp[MAX_CHANNELS]          = {10, 10, 10, 10, 10, 10, 10, 10};
+float  Ki[MAX_CHANNELS]          = { 1,  1,  1,  1,  1,  1,  1,  1};
+float  Kd[MAX_CHANNELS]          = { 0,  0,  0,  0,  0,  0,  0,  0};
+char   tankID[MAX_CHANNELS][7]   = {"CH1","CH2","CH3","CH4","CH5","CH6","CH7","CH8"};
 
-// sequence config
-int      nPhases = 0;
-float    phaseSetpoints[MAX_PHASES];
-uint32_t phaseDurSec[MAX_PHASES];     // phase duration in seconds
-char     phaseTypes[MAX_PHASES];      // 'h','c','p','d'
-float    phaseMinSP[MAX_PHASES];      // 'd' type: minimum setpoint
-float    phaseMaxSP[MAX_PHASES];      // 'd' type: maximum setpoint
-float    phasePeakHour[MAX_PHASES];   // 'd' type: hour of maximum (0–24)
+// ─── per-channel config ───────────────────────────────────────────────────────
+ChMode   chMode[MAX_CHANNELS];                       // mode per channel
+uint32_t chStart[MAX_CHANNELS];                      // RTC unixtime to begin (0 = immediate)
+float    chSetpoint[MAX_CHANNELS];                   // SETPOINT mode target DO
+long     chDurationMin[MAX_CHANNELS];                // SETPOINT duration in minutes
+uint32_t chSetpointEndUnix[MAX_CHANNELS];            // computed at CMD:START
+byte     chNPhases[MAX_CHANNELS];                    // number of phases per channel
+byte     chPhaseIdx[MAX_CHANNELS];                   // current phase index per channel
+uint32_t chCurrentPhaseEndUnix[MAX_CHANNELS];        // rolling end of current phase
+bool     chDone[MAX_CHANNELS];                       // channel finished → passive MEASURE
+bool     chActive[MAX_CHANNELS];                     // false until chStart time arrives (WAITING)
+byte     chSampSince[MAX_CHANNELS];                  // samples since last rate recalc ('c' phase)
+
+// ─── per-channel phase arrays (2-D: [channel][phase]) ─────────────────────────
+float    chPhaseSP[MAX_CHANNELS][MAX_PHASES];        // hold / change target DO
+uint32_t chPhaseDurSec[MAX_CHANNELS][MAX_PHASES];    // phase duration in seconds
+char     chPhaseType[MAX_CHANNELS][MAX_PHASES];      // 'h','c','p','d'
+float    chPhaseMinSP[MAX_CHANNELS][MAX_PHASES];     // 'd': min DO
+float    chPhaseMaxSP[MAX_CHANNELS][MAX_PHASES];     // 'd': max DO
+float    chPhasePeakHour[MAX_CHANNELS][MAX_PHASES];  // 'd': hour of maximum (0–24)
 
 // ─── PIDs ─────────────────────────────────────────────────────────────────────
 double doInput[MAX_CHANNELS]  = {0};
@@ -140,16 +163,11 @@ char recvBuf[RECV_BUF];
 int  recvIdx = 0;
 
 // ─── runtime state ────────────────────────────────────────────────────────────
-DateTime expStart;
-uint32_t phaseEndUnix[MAX_PHASES + 1]; // RTC unixtime of each phase boundary
-uint32_t setpointEndUnix = 0;
+uint32_t expStartUnix    = 0;    // RTC unixtime of CMD:START (for elapsed-time log column)
 uint32_t pauseStartUnix  = 0;
-int      phaseIdx         = 0;
-int      windowSize       = 0;
+int      windowSize      = 0;
 double   doFloatPrev[MAX_CHANNELS] = {0};
-int      rateReCalc       = 0;
-int      samplesSinceCalc = 0;
-unsigned long loopStart   = 0;
+unsigned long loopStart  = 0;
 
 // ─── SD / logging state ───────────────────────────────────────────────────────
 char     filename[22];   // "YYYY_MM_DD_HH_MM.csv\0"
@@ -170,12 +188,12 @@ void (*resetFunc)(void) = 0;   // software reboot to address 0
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  Helper: daily-cycle setpoint from RTC time
+//  Helper: daily-cycle setpoint (takes values directly, not an array index)
 // ═══════════════════════════════════════════════════════════════════════════════
-float dailyCycleSP(int idx, float hourDecimal) {
-    float mean = (phaseMinSP[idx] + phaseMaxSP[idx]) / 2.0;
-    float ampl = (phaseMaxSP[idx] - phaseMinSP[idx]) / 2.0;
-    return mean + ampl * cos(2.0 * PI * (hourDecimal - phasePeakHour[idx]) / 24.0);
+float dailyCycleSP(float minSP, float maxSP, float peakHour, float hourDecimal) {
+    float mean = (minSP + maxSP) / 2.0f;
+    float ampl = (maxSP - minSP) / 2.0f;
+    return mean + ampl * cos(2.0f * PI * (hourDecimal - peakHour) / 24.0f);
 }
 
 
@@ -198,350 +216,355 @@ bool measureAllChannels(double* doVals, double* tempVals) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  Serial data emission (for live monitoring; SD is the primary log)
+//  Serial data emission: DATA line + per-channel STATUS lines
 // ═══════════════════════════════════════════════════════════════════════════════
-void emitData(uint32_t elapsedMs, double* doVals, double* tempVals,
-              float sp, int pidx, char ptype) {
+void emitData(uint32_t elapsedMs, double* doVals, double* tempVals) {
+    // DATA:<elapsed_ms>,<do0,...>,<temp1>[,<temp2>],<out_ms0,...>
     Serial.print(F("DATA:"));
     Serial.print(elapsedMs);
-    for (int i = 0; i < nChannels; i++) { Serial.print(','); Serial.print(doVals[i], 3); }
-    Serial.print(','); Serial.print(tempVals[0], 3);
-    if (nSensors == 2) { Serial.print(','); Serial.print(tempVals[1], 3); }
+    for (int i = 0; i < nChannels; i++) { Serial.print(','); Serial.print(doVals[i], 2); }
+    Serial.print(','); Serial.print(tempVals[0], 2);
+    if (nSensors == 2) { Serial.print(','); Serial.print(tempVals[1], 2); }
+    for (int i = 0; i < nChannels; i++) { Serial.print(','); Serial.print((long)doOutput[i]); }
+    Serial.println();
+
+    // STATUS:CH:<ch>:<statusStr>:<phaseIdx>:<do>:<sp>
     for (int i = 0; i < nChannels; i++) {
-        Serial.print(',');
-        Serial.print((long)(doOutput[i]) * 200);
+        Serial.print(F("STATUS:CH:")); Serial.print(i); Serial.print(':');
+        if      (chDone[i])                    Serial.print(F("DONE"));
+        else if (chMode[i] == CH_MEASURE)      Serial.print(F("MEASURE"));
+        else if (!chActive[i])                 Serial.print(F("WAITING-MEASURING"));
+        else if (chMode[i] == CH_SETPOINT)     Serial.print(F("SETPOINT"));
+        else                                   Serial.print(F("SEQUENCE"));
+        Serial.print(':'); Serial.print(chPhaseIdx[i]);
+        Serial.print(':'); Serial.print(doVals[i], 2);
+        Serial.print(':');
+        float sp = 0.0f;
+        if (chActive[i] && !chDone[i] && chMode[i] != CH_MEASURE) {
+            if (chMode[i] == CH_SETPOINT) {
+                sp = chSetpoint[i];
+            } else if (chNPhases[i] > 0) {
+                byte pi = chPhaseIdx[i];
+                char pt = chPhaseType[i][pi];
+                sp = (pt == 'h' || pt == 'd') ? (float)holdSP[i] : chPhaseSP[i][pi];
+            }
+        }
+        Serial.println(sp, 2);
     }
-    Serial.print(','); Serial.print(sp, 2);
-    Serial.print(','); Serial.print(pidx);
-    Serial.print(','); Serial.println(ptype);
 }
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  LCD: non-blocking cycle through pages once per measurement cycle
+//  LCD update: page 0 = elapsed + temps; pages 1..n = per-channel detail
+//  LEFT/RIGHT buttons cycle pages; SELECT returns to page 0
 // ═══════════════════════════════════════════════════════════════════════════════
-void lcdUpdate(float sp, char ptype) {
+void lcdUpdate() {
+    uint8_t btns = lcd.readButtons();
+    if      (btns & BUTTON_RIGHT)  lcdPage = (lcdPage + 1) % lcdNumPages;
+    else if (btns & BUTTON_LEFT)   lcdPage = (lcdPage + lcdNumPages - 1) % lcdNumPages;
+    else if (btns & BUTTON_SELECT) lcdPage = 0;
+
     lcd.clear();
 
     if (lcdPage == 0) {
-        // ── page 0: phase / setpoint / time remaining ──
+        // Page 0: elapsed time (line 0) + temperatures (line 1)
+        uint32_t elapsed = RTC.now().unixtime() - expStartUnix;
+        uint16_t eh = (uint16_t)(elapsed / 3600UL);
+        uint8_t  em = (elapsed % 3600UL) / 60;
+        uint8_t  es =  elapsed % 60;
         lcd.setCursor(0, 0);
-        if (mode == SEQUENCE) {
-            lcd.print("Ph"); lcd.print(phaseIdx + 1);
-            lcd.print('/'); lcd.print(nPhases);
-            lcd.print(' '); lcd.print(ptype);
-            lcd.print(" SP:");
-            if (sp < 100) lcd.print(sp, 1); else lcd.print((int)sp);
-        } else if (mode == SETPOINT) {
-            lcd.print("SP:");
-            lcd.print(sp, 1);
-            lcd.print(" ");
-        } else {
-            lcd.print("MEASURE");
-        }
-
+        lcd.print(F("T="));
+        if (eh < 10) lcd.print('0'); lcd.print(eh);
+        lcd.print('h');
+        if (em < 10) lcd.print('0'); lcd.print(em);
+        lcd.print('m');
+        if (es < 10) lcd.print('0'); lcd.print(es);
+        lcd.print('s');
         lcd.setCursor(0, 1);
-        if (mode == SEQUENCE && phaseIdx < nPhases) {
-            uint32_t nowUnix = RTC.now().unixtime();
-            long remSec = (long)(phaseEndUnix[phaseIdx + 1] - nowUnix);
-            if (remSec < 0) remSec = 0;
-            int remD = remSec / 86400;
-            int remH = (remSec % 86400) / 3600;
-            int remM = (remSec % 3600) / 60;
-            lcd.print("Rem:");
-            lcd.print(remD); lcd.print('d');
-            lcd.print(remH); lcd.print('h');
-            lcd.print(remM); lcd.print('m');
-        } else if (mode == SETPOINT) {
-            uint32_t nowUnix = RTC.now().unixtime();
-            long remSec = (long)(setpointEndUnix - nowUnix);
-            if (remSec < 0) remSec = 0;
-            int remH = remSec / 3600;
-            int remM = (remSec % 3600) / 60;
-            lcd.print("Rem:"); lcd.print(remH); lcd.print('h'); lcd.print(remM); lcd.print('m');
-        }
-        lcd.print(" T:"); lcd.print((int)round(lastTemp));
+        lcd.print(F("T1:")); lcd.print(lastTemp, 1);
+        if (nSensors == 2) { lcd.print(F(" T2:")); lcd.print(lastTemp2, 1); }
 
     } else {
-        // ── pages 1..nChannels: per-channel DO ──
-        int ch = lcdPage - 1;
-        if (ch < nChannels) {
-            lcd.setCursor(0, 0);
-            lcd.print(tankID[ch]); lcd.print(':');
-            lcd.print(lastDO[ch], 1); lcd.print("% air");
-            lcd.setCursor(0, 1);
-            lcd.print("Out:"); lcd.print((long)(doOutput[ch]) * 200); lcd.print("ms");
+        int i = lcdPage - 1;
+        // Line 0: tankID  DO%  status
+        lcd.setCursor(0, 0);
+        lcd.print(tankID[i]); lcd.print(' ');
+        lcd.print(lastDO[i], 2); lcd.print('%'); lcd.print(' ');
+        if      (chDone[i])                    lcd.print(F("DONE"));
+        else if (chMode[i] == CH_MEASURE)      lcd.print('M');
+        else if (!chActive[i])                 lcd.print(F("WAIT"));
+        else if (chMode[i] == CH_SETPOINT)     lcd.print(F("SP"));
+        else { lcd.print('P'); lcd.print(chPhaseIdx[i] + 1); }  // SEQUENCE
+
+        // Line 1: setpoint info
+        lcd.setCursor(0, 1);
+        if (chActive[i] && !chDone[i] && chMode[i] != CH_MEASURE) {
+            if (chMode[i] == CH_SETPOINT) {
+                lcd.print(F("SP:")); lcd.print(chSetpoint[i], 2);
+            } else if (chNPhases[i] > 0) {
+                byte pi = chPhaseIdx[i];
+                char pt = chPhaseType[i][pi];
+                lcd.print(pt); lcd.print(' ');
+                if      (pt == 'h' || pt == 'd') { lcd.print(F("SP:")); lcd.print(holdSP[i], 2); }
+                else if (pt == 'c')              { lcd.print(F(">")); lcd.print(chPhaseSP[i][pi], 2); }
+                else                               lcd.print(F("pause"));
+            }
         }
     }
-
-    lcdPage = (lcdPage + 1) % lcdNumPages;
 }
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  SD: create daily log file with metadata header
+//  SD: open or create today's log file; write CSV header if new
 // ═══════════════════════════════════════════════════════════════════════════════
 void createLogfile() {
     DateTime now = RTC.now();
     sprintf(filename, "%04d_%02d_%02d_%02d_%02d.csv",
             now.year(), now.month(), now.day(), now.hour(), now.minute());
-    logFile = SD.open(filename, FILE_WRITE);
-    if (!logFile) {
-        Serial.println(F("MSG:SD logfile create failed"));
-        lcd.clear(); lcd.print("SD error!"); return;
-    }
     lastLogDay = now.day();
-
-    // Metadata header
-    logFile.print(F("Date:;")); logFile.print(now.year()); logFile.print('/');
-    logFile.print(now.month()); logFile.print('/'); logFile.println(now.day());
-    logFile.print(F("Mode:;"));
-    if      (mode == MEASURE)  logFile.println(F("MEASURE"));
-    else if (mode == SETPOINT) logFile.println(F("SETPOINT"));
-    else                       logFile.println(F("SEQUENCE"));
-    logFile.print(F("Interval_ms:;")); logFile.println(sampInterval);
-    logFile.print(F("Channels:;"));    logFile.println(nChannels);
-    logFile.print(F("Sensors:;"));     logFile.println(nSensors);
-    if (nSensors == 2) { logFile.print(F("S1Channels:;")); logFile.println(s1Channels); }
-    logFile.print(F("TankIDs:;"));
-    for (int i = 0; i < nChannels; i++) { logFile.print(tankID[i]); logFile.print(';'); }
-    logFile.println();
-    logFile.print(F("RelayPins:;"));
-    for (int i = 0; i < nChannels; i++) { logFile.print(relayPins[i]); logFile.print(';'); }
-    logFile.println();
-    // Column headers
-    logFile.print(F("n;Date;Time;Temp1_C;"));
-    if (nSensors == 2) logFile.print(F("Temp2_C;"));
-    for (int i = 0; i < nChannels; i++) {
-        logFile.print(F("DO_")); logFile.print(tankID[i]); logFile.print(';');
+    if (!SD.exists(filename)) {
+        FsFile f = SD.open(filename, O_WRITE | O_CREAT | O_AT_END);
+        if (f) {
+            f.print(F("ROW;ELAPSED_MS;DATE;TIME"));
+            for (int i = 0; i < nChannels; i++) { f.print(';'); f.print(F("DO_")); f.print(tankID[i]); }
+            f.print(F(";TEMP1"));
+            if (nSensors == 2) f.print(F(";TEMP2"));
+            for (int i = 0; i < nChannels; i++) { f.print(';'); f.print(F("OUT_MS_")); f.print(tankID[i]); }
+            f.println();
+            f.close();
+        }
     }
-    for (int i = 0; i < nChannels; i++) {
-        logFile.print(F("Out_ms_")); logFile.print(tankID[i]); logFile.print(';');
-    }
-    logFile.println(F("Setpoint;Phase;PhaseType"));
-    logFile.flush();
     Serial.print(F("MSG:Logfile ")); Serial.println(filename);
 }
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  SD: append one measurement row
+//  SD: append one measurement row; rotate file at midnight
 // ═══════════════════════════════════════════════════════════════════════════════
-void writeToSD(double* doVals, double* tempVals, float sp, int pidx, char ptype) {
-    if (!logFile) return;
+void writeToSD(double* doVals, double* tempVals) {
+    if (!sdReady) return;
     DateTime now = RTC.now();
-
-    // Daily log rotation
-    if (now.day() != lastLogDay) {
-        logFile.close();
-        createLogfile();
-    }
-
+    if (now.day() != lastLogDay) createLogfile();  // daily rotation
+    FsFile f = SD.open(filename, O_WRITE | O_AT_END);
+    if (!f) return;
+    uint32_t elapsedMs = (now.unixtime() - expStartUnix) * 1000UL;
+    f.print(rowN);       f.print(';');
+    f.print(elapsedMs);  f.print(';');
+    f.print(now.year()); f.print('/');
+    f.print(now.month()); f.print('/');
+    f.print(now.day());  f.print(';');
+    f.print(now.hour()); f.print(':');
+    f.print(now.minute()); f.print(':');
+    f.print(now.second());
+    for (int i = 0; i < nChannels; i++) { f.print(';'); f.print(doVals[i], 3); }
+    f.print(';'); f.print(tempVals[0], 2);
+    if (nSensors == 2) { f.print(';'); f.print(tempVals[1], 2); }
+    for (int i = 0; i < nChannels; i++) { f.print(';'); f.print((long)doOutput[i]); }
+    f.println();
+    f.close();
     rowN++;
-    logFile.print(rowN);           logFile.print(';');
-    logFile.print(now.year());     logFile.print('/');
-    logFile.print(now.month());    logFile.print('/');
-    logFile.print(now.day());      logFile.print(';');
-    logFile.print(now.hour());     logFile.print(':');
-    logFile.print(now.minute());   logFile.print(':');
-    logFile.print(now.second());   logFile.print(';');
-    logFile.print(tempVals[0], 3); logFile.print(';');
-    if (nSensors == 2) { logFile.print(tempVals[1], 3); logFile.print(';'); }
-    for (int i = 0; i < nChannels; i++) { logFile.print(doVals[i], 3); logFile.print(';'); }
-    for (int i = 0; i < nChannels; i++) {
-        logFile.print((long)(doOutput[i]) * 200); logFile.print(';');
-    }
-    logFile.print(sp, 2);      logFile.print(';');
-    logFile.print(pidx);       logFile.print(';');
-    logFile.println(ptype);
-    logFile.flush();
 }
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  SD: persist experiment state after every cycle (power-outage recovery)
+//  SD: persist experiment state to STATE.TXT (called every measurement cycle)
 // ═══════════════════════════════════════════════════════════════════════════════
 void writeState() {
     if (!sdReady) return;
-    FsFile sf = SD.open("STATE.TXT", O_WRITE | O_CREAT | O_TRUNC);
-    if (!sf) return;
-    sf.print(filename);            sf.print(';');
-    sf.print(rowN);                sf.print(';');
-    sf.print(expStart.year());     sf.print(';');
-    sf.print(expStart.month());    sf.print(';');
-    sf.print(expStart.day());      sf.print(';');
-    sf.print(expStart.hour());     sf.print(';');
-    sf.print(expStart.minute());   sf.print(';');
-    sf.print(expStart.second());   sf.print(';');
-    sf.print(phaseIdx);            sf.print(';');
-    for (int i = 0; i < MAX_CHANNELS; i++) { sf.print(lastDO[i], 3); sf.print(';'); }
-    sf.print(lastTemp, 3);   sf.print(';');
-    sf.println(lastTemp2, 3);
-    sf.close();
-}
-
-
-// ═══════════════════════════════════════════════════════════════════════════════
-//  SD: read experiment state on boot
-// ═══════════════════════════════════════════════════════════════════════════════
-bool readState() {
-    if (!sdReady || !SD.exists("STATE.TXT")) return false;
-    FsFile sf = SD.open("STATE.TXT", O_RDONLY);
-    if (!sf) return false;
-    char buf[260];
-    int len = sf.read(buf, sizeof(buf) - 1);
-    sf.close();
-    if (len <= 0) return false;
-    buf[len] = '\0';
-
-    char* tok;
-    tok = strtok(buf, ";"); if (!tok) return false;
-    strncpy(filename, tok, sizeof(filename) - 1); filename[sizeof(filename)-1] = '\0';
-
-    tok = strtok(NULL, ";"); if (!tok) return false; rowN = (uint32_t)atol(tok);
-
-    int ey, em, ed, eh, emi, es;
-    tok = strtok(NULL, ";"); if (!tok) return false; ey  = atoi(tok);
-    tok = strtok(NULL, ";"); if (!tok) return false; em  = atoi(tok);
-    tok = strtok(NULL, ";"); if (!tok) return false; ed  = atoi(tok);
-    tok = strtok(NULL, ";"); if (!tok) return false; eh  = atoi(tok);
-    tok = strtok(NULL, ";"); if (!tok) return false; emi = atoi(tok);
-    tok = strtok(NULL, ";"); if (!tok) return false; es  = atoi(tok);
-    expStart = DateTime(ey, em, ed, eh, emi, es);
-
-    tok = strtok(NULL, ";"); if (!tok) return false; phaseIdx = atoi(tok);
-
-    for (int i = 0; i < MAX_CHANNELS; i++) {
-        tok = strtok(NULL, ";");
-        if (tok) lastDO[i] = atof(tok);
+    FsFile stFile = SD.open("STATE.TXT", O_WRITE | O_CREAT | O_TRUNC);
+    if (!stFile) return;
+    stFile.print(F("EXP_START=")); stFile.println(expStartUnix);
+    stFile.print(F("LOGFILE="));   stFile.println(filename);
+    for (int i = 0; i < nChannels; i++) {
+        stFile.print(F("CH_")); stFile.print(i); stFile.print(F("_PIDX="));  stFile.println(chPhaseIdx[i]);
+        stFile.print(F("CH_")); stFile.print(i); stFile.print(F("_DONE="));  stFile.println(chDone[i] ? 1 : 0);
+        stFile.print(F("CH_")); stFile.print(i); stFile.print(F("_SPEND=")); stFile.println(chSetpointEndUnix[i]);
+        stFile.print(F("CH_")); stFile.print(i); stFile.print(F("_PEND="));  stFile.println(chCurrentPhaseEndUnix[i]);
+        stFile.print(F("CH_")); stFile.print(i); stFile.print(F("_DOPREV="));stFile.println(doFloatPrev[i], 4);
     }
-    tok = strtok(NULL, ";");
-    if (tok) lastTemp = atof(tok);
-    tok = strtok(NULL, ";\r\n");
-    if (tok) lastTemp2 = atof(tok);
-    return true;
+    stFile.close();
 }
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  SD: save current config to CONFIG.TXT
+//  SD: load experiment state from STATE.TXT on boot
+// ═══════════════════════════════════════════════════════════════════════════════
+
+static void parseStateLine(char* key, char* val) {
+    if (strcmp(key, "EXP_START") == 0) { expStartUnix = strtoul(val, NULL, 10); return; }
+    if (strcmp(key, "LOGFILE")   == 0) { strncpy(filename, val, 21); filename[21] = '\0'; return; }
+    if (strncmp(key, "CH_", 3)  != 0) return;
+    char* p = key + 3;
+    int ch = atoi(p);
+    if (ch < 0 || ch >= MAX_CHANNELS) return;
+    while (*p && *p != '_') p++;  // skip digit(s)
+    if (*p == '_') p++;           // skip '_'
+    if      (strcmp(p, "PIDX" ) == 0) chPhaseIdx[ch]            = (byte)atoi(val);
+    else if (strcmp(p, "DONE" ) == 0) chDone[ch]                = (atoi(val) != 0);
+    else if (strcmp(p, "SPEND") == 0) chSetpointEndUnix[ch]     = strtoul(val, NULL, 10);
+    else if (strcmp(p, "PEND" ) == 0) chCurrentPhaseEndUnix[ch] = strtoul(val, NULL, 10);
+    else if (strcmp(p, "DOPREV")== 0) doFloatPrev[ch]           = atof(val);
+}
+
+bool readState() {
+    if (!sdReady) return false;
+    FsFile stFile = SD.open("STATE.TXT", O_READ);
+    if (!stFile) return false;
+    char line[42];
+    int  lineLen = 0;
+    bool gotStart = false;
+    while (stFile.available()) {
+        char c = (char)stFile.read();
+        if (c == '\n' || c == '\r') {
+            if (lineLen > 0) {
+                line[lineLen] = '\0';
+                char* eq = strchr(line, '=');
+                if (eq) {
+                    *eq = '\0';
+                    if (strcmp(line, "EXP_START") == 0) gotStart = true;
+                    parseStateLine(line, eq + 1);
+                }
+                lineLen = 0;
+            }
+        } else if (lineLen < 41) {
+            line[lineLen++] = c;
+        }
+    }
+    stFile.close();
+    return gotStart;
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  SD: save config to CONFIG.TXT
 // ═══════════════════════════════════════════════════════════════════════════════
 void saveConfig() {
     if (!sdReady) { Serial.println(F("ACK:ERR:SD not ready")); return; }
-    FsFile cf = SD.open("CONFIG.TXT", O_WRITE | O_CREAT | O_TRUNC);
-    if (!cf) { Serial.println(F("ACK:ERR:SD write")); return; }
+    SD.remove("CONFIG.TXT");
+    FsFile cfgFile = SD.open("CONFIG.TXT", O_WRITE | O_CREAT | O_TRUNC);
+    if (!cfgFile) { Serial.println(F("ACK:ERR:SD open fail")); return; }
 
-    cf.print(F("MODE="));
-    if      (mode == MEASURE)  cf.println(F("MEASURE"));
-    else if (mode == SETPOINT) cf.println(F("SETPOINT"));
-    else                       cf.println(F("SEQUENCE"));
-    cf.print(F("NCHANNELS=")); cf.println(nChannels);
-    cf.print(F("SENSORS="));   cf.println(nSensors);
-    cf.print(F("S1CHANNELS=")); cf.println(s1Channels);
+    // ── shared hardware config ────────────────────────────────────────────────
+    cfgFile.print(F("NCHANNELS="));  cfgFile.println(nChannels);
+    cfgFile.print(F("NSENSORS="));   cfgFile.println(nSensors);
+    cfgFile.print(F("S1CHANNELS=")); cfgFile.println(s1Channels);
     for (int i = 0; i < MAX_CHANNELS; i++) {
-        cf.print(F("RELAY_")); cf.print(i); cf.print('='); cf.println(relayPins[i]);
+        cfgFile.print(F("RELAY_")); cfgFile.print(i);
+        cfgFile.print('='); cfgFile.println(relayPins[i]);
     }
-    cf.print(F("INTERVAL=")); cf.println(sampInterval);
-    cf.print(F("DURATION=")); cf.println(experimentDuration);
+    cfgFile.print(F("INTERVAL=")); cfgFile.println(sampInterval);
     for (int i = 0; i < MAX_CHANNELS; i++) {
-        cf.print(F("TANKID_")); cf.print(i); cf.print('='); cf.println(tankID[i]);
+        cfgFile.print(F("TANKID_")); cfgFile.print(i);
+        cfgFile.print('='); cfgFile.println(tankID[i]);
     }
-    cf.print(F("SETPOINT=")); cf.println(DOSetpoint);
     for (int i = 0; i < MAX_CHANNELS; i++) {
-        cf.print(F("KP_")); cf.print(i); cf.print('='); cf.println(Kp[i]);
-        cf.print(F("KI_")); cf.print(i); cf.print('='); cf.println(Ki[i]);
-        cf.print(F("KD_")); cf.print(i); cf.print('='); cf.println(Kd[i]);
+        cfgFile.print(F("KP_")); cfgFile.print(i); cfgFile.print('='); cfgFile.println(Kp[i], 4);
+        cfgFile.print(F("KI_")); cfgFile.print(i); cfgFile.print('='); cfgFile.println(Ki[i], 4);
+        cfgFile.print(F("KD_")); cfgFile.print(i); cfgFile.print('='); cfgFile.println(Kd[i], 4);
     }
-    cf.print(F("NPHASES=")); cf.println(nPhases);
-    for (int i = 0; i < nPhases; i++) {
-        cf.print(F("PHASE_")); cf.print(i); cf.print('=');
-        cf.print(phaseSetpoints[i]);              cf.print(',');
-        cf.print(phaseDurSec[i] / 86400UL);       cf.print(',');  // days
-        cf.print((phaseDurSec[i] % 86400UL) / 3600UL); cf.print(','); // hours
-        cf.print((phaseDurSec[i] % 3600UL)  / 60UL);   cf.print(','); // minutes
-        cf.print(phaseTypes[i]);                  cf.print(',');
-        cf.print(phaseMinSP[i]);                  cf.print(',');
-        cf.print(phaseMaxSP[i]);                  cf.print(',');
-        cf.println(phasePeakHour[i]);
+
+    // ── per-channel config ────────────────────────────────────────────────────
+    for (int i = 0; i < MAX_CHANNELS; i++) {
+        cfgFile.print(F("CH_")); cfgFile.print(i); cfgFile.print(F("_MODE="));     cfgFile.println((int)chMode[i]);
+        cfgFile.print(F("CH_")); cfgFile.print(i); cfgFile.print(F("_START="));    cfgFile.println(chStart[i]);
+        cfgFile.print(F("CH_")); cfgFile.print(i); cfgFile.print(F("_SETPOINT=")); cfgFile.println(chSetpoint[i], 4);
+        cfgFile.print(F("CH_")); cfgFile.print(i); cfgFile.print(F("_DUR_MIN="));  cfgFile.println(chDurationMin[i]);
+        cfgFile.print(F("CH_")); cfgFile.print(i); cfgFile.print(F("_NPHASES="));  cfgFile.println(chNPhases[i]);
+        for (int j = 0; j < chNPhases[i]; j++) {
+            cfgFile.print(F("CH_")); cfgFile.print(i);
+            cfgFile.print(F("_PHASE_")); cfgFile.print(j); cfgFile.print('=');
+            cfgFile.print(chPhaseSP[i][j], 4); cfgFile.print(',');
+            cfgFile.print(chPhaseDurSec[i][j]); cfgFile.print(',');
+            cfgFile.print(chPhaseType[i][j]);
+            if (chPhaseType[i][j] == 'd') {
+                cfgFile.print(','); cfgFile.print(chPhaseMinSP[i][j],   4);
+                cfgFile.print(','); cfgFile.print(chPhaseMaxSP[i][j],   4);
+                cfgFile.print(','); cfgFile.print(chPhasePeakHour[i][j], 4);
+            }
+            cfgFile.println();
+        }
     }
-    cf.close();
+    cfgFile.close();
     Serial.println(F("ACK:OK"));
-    Serial.println(F("MSG:Config saved to SD"));
+    Serial.println(F("MSG:Config saved"));
 }
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  SD: load config from CONFIG.TXT
+//  SD: load config from CONFIG.TXT  (line-by-line, 72-byte stack buffer)
 // ═══════════════════════════════════════════════════════════════════════════════
-bool loadConfig() {
-    if (!sdReady || !SD.exists("CONFIG.TXT")) return false;
-    FsFile cf = SD.open("CONFIG.TXT", O_RDONLY);
-    if (!cf) return false;
-    static char cfgBuf[1024];
-    int len = cf.read(cfgBuf, sizeof(cfgBuf) - 1);
-    cf.close();
-    if (len <= 0) return false;
-    cfgBuf[len] = '\0';
 
-    char* line = strtok(cfgBuf, "\n\r");
-    while (line != NULL) {
-        char* eq = strchr(line, '=');
-        if (!eq) { line = strtok(NULL, "\n\r"); continue; }
-        *eq = '\0';
-        char* key = line;
-        char* val = eq + 1;
+// Helper — called once per key=value line. Modifies key and val in place.
+static void parseConfigLine(char* key, char* val) {
+    // ── simple keys ──────────────────────────────────────────────────────────
+    if (strcmp(key, "NCHANNELS")  == 0) { nChannels   = constrain(atoi(val), 1, MAX_CHANNELS);   return; }
+    if (strcmp(key, "NSENSORS")   == 0) { nSensors    = constrain(atoi(val), 1, 2);              return; }
+    if (strcmp(key, "S1CHANNELS") == 0) { s1Channels  = constrain(atoi(val), 1, MAX_CHANNELS-1); return; }
+    if (strcmp(key, "INTERVAL")   == 0) { sampInterval = atol(val);                               return; }
 
-        if (strcmp(key, "MODE") == 0) {
-            if      (strcmp(val, "MEASURE") == 0)  mode = MEASURE;
-            else if (strcmp(val, "SETPOINT") == 0) mode = SETPOINT;
-            else if (strcmp(val, "SEQUENCE") == 0) mode = SEQUENCE;
-        } else if (strcmp(key, "NCHANNELS") == 0) {
-            nChannels = constrain(atoi(val), 1, MAX_CHANNELS);
-        } else if (strcmp(key, "SENSORS") == 0) {
-            nSensors = constrain(atoi(val), 1, 2);
-        } else if (strcmp(key, "S1CHANNELS") == 0) {
-            s1Channels = constrain(atoi(val), 1, MAX_CHANNELS - 1);
-        } else if (strncmp(key, "RELAY_", 6) == 0) {
-            int ch = atoi(key + 6);
-            if (ch >= 0 && ch < MAX_CHANNELS) relayPins[ch] = atoi(val);
-        } else if (strcmp(key, "INTERVAL") == 0) {
-            sampInterval = atol(val);
-        } else if (strcmp(key, "DURATION") == 0) {
-            experimentDuration = atol(val);
-        } else if (strncmp(key, "TANKID_", 7) == 0) {
-            int ch = atoi(key + 7);
-            if (ch >= 0 && ch < MAX_CHANNELS) strncpy(tankID[ch], val, 6);
-        } else if (strcmp(key, "SETPOINT") == 0) {
-            DOSetpoint = atof(val);
-        } else if (strncmp(key, "KP_", 3) == 0) {
-            int ch = atoi(key + 3);
-            if (ch >= 0 && ch < MAX_CHANNELS) Kp[ch] = atof(val);
-        } else if (strncmp(key, "KI_", 3) == 0) {
-            int ch = atoi(key + 3);
-            if (ch >= 0 && ch < MAX_CHANNELS) Ki[ch] = atof(val);
-        } else if (strncmp(key, "KD_", 3) == 0) {
-            int ch = atoi(key + 3);
-            if (ch >= 0 && ch < MAX_CHANNELS) Kd[ch] = atof(val);
-        } else if (strcmp(key, "NPHASES") == 0) {
-            nPhases = constrain(atoi(val), 0, MAX_PHASES);
-        } else if (strncmp(key, "PHASE_", 6) == 0) {
-            int idx = atoi(key + 6);
-            if (idx >= 0 && idx < MAX_PHASES) {
-                // val = "sp,days,hours,minutes,type,minSP,maxSP,peakH"
-                char* vt = strtok(val, ",");
-                if (vt) phaseSetpoints[idx] = atof(vt);
-                vt = strtok(NULL, ","); long dd = vt ? atol(vt) : 0;
-                vt = strtok(NULL, ","); long hh = vt ? atol(vt) : 0;
-                vt = strtok(NULL, ","); long mm = vt ? atol(vt) : 0;
-                phaseDurSec[idx] = (uint32_t)(dd * 86400L + hh * 3600L + mm * 60L);
-                vt = strtok(NULL, ","); if (vt) phaseTypes[idx] = vt[0];
-                vt = strtok(NULL, ","); if (vt) phaseMinSP[idx]    = atof(vt);
-                vt = strtok(NULL, ","); if (vt) phaseMaxSP[idx]    = atof(vt);
-                vt = strtok(NULL, ",\r\n"); if (vt) phasePeakHour[idx] = atof(vt);
-            }
+    // ── indexed keys: RELAY_i, TANKID_i, KP_i, KI_i, KD_i ──────────────────
+    if (strncmp(key, "RELAY_",  6) == 0) { int i=atoi(key+6);  if (i>=0&&i<MAX_CHANNELS) relayPins[i]=atoi(val);         return; }
+    if (strncmp(key, "TANKID_", 7) == 0) { int i=atoi(key+7);  if (i>=0&&i<MAX_CHANNELS) strncpy(tankID[i],val,6);       return; }
+    if (strncmp(key, "KP_",     3) == 0) { int i=atoi(key+3);  if (i>=0&&i<MAX_CHANNELS) Kp[i]=atof(val);                return; }
+    if (strncmp(key, "KI_",     3) == 0) { int i=atoi(key+3);  if (i>=0&&i<MAX_CHANNELS) Ki[i]=atof(val);                return; }
+    if (strncmp(key, "KD_",     3) == 0) { int i=atoi(key+3);  if (i>=0&&i<MAX_CHANNELS) Kd[i]=atof(val);                return; }
+
+    // ── per-channel keys: CH_i_* ──────────────────────────────────────────────
+    if (strncmp(key, "CH_", 3) != 0) return;
+    char* p = key + 3;
+    int ch = atoi(p);
+    if (ch < 0 || ch >= MAX_CHANNELS) return;
+    while (*p && *p != '_') p++;   // skip digit(s)
+    if (*p == '_') p++;            // skip '_'
+
+    if (strcmp(p, "MODE")     == 0) { int m=atoi(val); if(m>=0&&m<=2) chMode[ch]=(ChMode)m;            return; }
+    if (strcmp(p, "START")    == 0) { chStart[ch]       = strtoul(val, NULL, 10);                        return; }
+    if (strcmp(p, "SETPOINT") == 0) { chSetpoint[ch]    = atof(val);                                     return; }
+    if (strcmp(p, "DUR_MIN")  == 0) { chDurationMin[ch] = atol(val);                                     return; }
+    if (strcmp(p, "NPHASES")  == 0) { chNPhases[ch]     = (byte)constrain(atoi(val), 0, MAX_PHASES);     return; }
+
+    if (strncmp(p, "PHASE_", 6) == 0) {
+        int j = atoi(p + 6);
+        if (j < 0 || j >= MAX_PHASES) return;
+        // val format: "sp,durSec,type[,minSP,maxSP,peakHour]"
+        char vbuf[56];
+        strncpy(vbuf, val, 55); vbuf[55] = '\0';
+        char* tok = strtok(vbuf, ","); if (!tok) return;
+        chPhaseSP[ch][j] = atof(tok);
+        tok = strtok(NULL, ","); if (!tok) return;
+        chPhaseDurSec[ch][j] = strtoul(tok, NULL, 10);
+        tok = strtok(NULL, ","); if (!tok) return;
+        chPhaseType[ch][j] = tok[0];
+        if (tok[0] == 'd') {
+            tok = strtok(NULL, ","); if (!tok) return; chPhaseMinSP[ch][j]    = atof(tok);
+            tok = strtok(NULL, ","); if (!tok) return; chPhaseMaxSP[ch][j]    = atof(tok);
+            tok = strtok(NULL, ","); if (!tok) return; chPhasePeakHour[ch][j] = atof(tok);
         }
-        line = strtok(NULL, "\n\r");
     }
+}
+
+bool loadConfig() {
+    if (!sdReady) return false;
+    FsFile cfgFile = SD.open("CONFIG.TXT", O_READ);
+    if (!cfgFile) return false;
+
+    char line[72];
+    int  lineLen = 0;
+
+    while (cfgFile.available()) {
+        char c = (char)cfgFile.read();
+        if (c == '\n' || c == '\r') {
+            if (lineLen > 0) {
+                line[lineLen] = '\0';
+                char* eq = strchr(line, '=');
+                if (eq) { *eq = '\0'; parseConfigLine(line, eq + 1); }
+                lineLen = 0;
+            }
+        } else if (lineLen < 71) {
+            line[lineLen++] = c;
+        }
+    }
+    cfgFile.close();
     return true;
 }
 
@@ -574,24 +597,42 @@ void initHardware() {
 // ═══════════════════════════════════════════════════════════════════════════════
 void startExperiment() {
     initHardware();
-    expStart = RTC.now();
+    expStartUnix = RTC.now().unixtime();
     rowN = 0;
 
-    if (mode == SETPOINT) {
-        setpointEndUnix = expStart.unixtime() + (uint32_t)experimentDuration * 60UL;
-        for (int i = 0; i < nChannels; i++) holdSP[i] = DOSetpoint;
-    } else if (mode == SEQUENCE) {
-        phaseIdx = 0;
-        phaseEndUnix[0] = expStart.unixtime();
-        for (int i = 0; i < nPhases; i++)
-            phaseEndUnix[i + 1] = phaseEndUnix[i] + phaseDurSec[i];
-        for (int i = 0; i < nChannels; i++) {
-            holdSP[i]       = phaseSetpoints[0];
-            seqRateSP[i]    = 0.0;
-            doFloatPrev[i]  = 0.0;
-            seqRatePIDs[i]->SetMode(AUTOMATIC);
+    for (int i = 0; i < nChannels; i++) {
+        chPhaseIdx[i]  = 0;
+        chDone[i]      = false;
+        chSampSince[i] = 0;
+        doFloatPrev[i] = 0.0;
+
+        // Normalise chStart: 0 means "start immediately at CMD:START"
+        if (chStart[i] == 0) chStart[i] = expStartUnix;
+
+        bool immediate = (chStart[i] <= expStartUnix);
+        chActive[i] = immediate;   // WAITING channels are activated in runAllChannels
+
+        if (chMode[i] == CH_SETPOINT) {
+            chSetpointEndUnix[i] = chStart[i] + (uint32_t)chDurationMin[i] * 60UL;
+            if (immediate) {
+                holdSP[i] = chSetpoint[i];
+                valvePIDs[i]->SetMode(AUTOMATIC);
+            }
+
+        } else if (chMode[i] == CH_SEQUENCE && chNPhases[i] > 0) {
+            chCurrentPhaseEndUnix[i] = chStart[i] + chPhaseDurSec[i][0];
+            if (immediate) {
+                char t = chPhaseType[i][0];
+                if (t == 'h' || t == 'd') {
+                    holdSP[i] = chPhaseSP[i][0];
+                    valvePIDs[i]->SetMode(AUTOMATIC);
+                } else if (t == 'c') {
+                    seqRatePIDs[i]->SetMode(AUTOMATIC);
+                }
+                // 'p': all PIDs remain MANUAL (relays closed)
+            }
         }
-        samplesSinceCalc = 0;
+        // CH_MEASURE: no PIDs, no end times needed
     }
 
     createLogfile();
@@ -603,252 +644,200 @@ void startExperiment() {
 
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Recover experiment from STATE.TXT after power outage
-//  Assumes config already loaded via loadConfig() and state read via readState()
+//  Precondition: loadConfig() + readState() already called by setup()
 // ═══════════════════════════════════════════════════════════════════════════════
 void recoverExperiment() {
     initHardware();
+    uint32_t nowUnix = RTC.now().unixtime();
 
-    // Recompute phase boundaries from recovered expStart
-    if (mode == SEQUENCE) {
-        phaseEndUnix[0] = expStart.unixtime();
-        for (int i = 0; i < nPhases; i++)
-            phaseEndUnix[i + 1] = phaseEndUnix[i] + phaseDurSec[i];
+    for (int i = 0; i < nChannels; i++) {
+        chSampSince[i] = 0;
+        chActive[i]    = (chStart[i] <= nowUnix);
 
-        // Find current phase from RTC
-        uint32_t nowUnix = RTC.now().unixtime();
-        while (phaseIdx < nPhases && nowUnix >= phaseEndUnix[phaseIdx + 1])
-            phaseIdx++;
+        if (chDone[i] || chMode[i] == CH_MEASURE || !chActive[i]) continue;
 
-        if (phaseIdx >= nPhases) {
-            // Experiment already finished during downtime
-            ardoxy.end();
-            if (nSensors == 2) ardoxy2.end();
-            Ardoxy::closeRelays(nChannels, relayPins);
-            Serial.println(F("MSG:Sequence finished during downtime"));
-            lcd.clear(); lcd.print("Seq complete!"); lcd.setCursor(0,1); lcd.print("Connect to reset");
-            state = CONFIGURED;
-            return;
-        }
-        // Restore doFloatPrev for 'c' phase continuity
-        for (int i = 0; i < nChannels; i++) doFloatPrev[i] = lastDO[i];
-        if (phaseTypes[phaseIdx] == 'c') {
-            samplesSinceCalc = 0;
-            for (int i = 0; i < nChannels; i++) seqRatePIDs[i]->SetMode(AUTOMATIC);
-        }
-        if (phaseTypes[phaseIdx] == 'h') {
-            for (int i = 0; i < nChannels; i++) holdSP[i] = phaseSetpoints[phaseIdx];
-        }
+        if (chMode[i] == CH_SETPOINT) {
+            if (nowUnix >= chSetpointEndUnix[i]) {
+                chDone[i] = true;  // finished during outage
+            } else {
+                holdSP[i] = chSetpoint[i];
+                valvePIDs[i]->SetMode(AUTOMATIC);
+            }
 
-    } else if (mode == SETPOINT) {
-        setpointEndUnix = expStart.unixtime() + (uint32_t)experimentDuration * 60UL;
-        if (RTC.now().unixtime() >= setpointEndUnix) {
-            ardoxy.end();
-            if (nSensors == 2) ardoxy2.end();
-            Ardoxy::closeRelays(nChannels, relayPins);
-            Serial.println(F("MSG:Setpoint experiment finished during downtime"));
-            state = CONFIGURED;
-            return;
+        } else if (chMode[i] == CH_SEQUENCE) {
+            // Fast-forward through phases that expired during outage
+            while (chPhaseIdx[i] < chNPhases[i] && nowUnix >= chCurrentPhaseEndUnix[i]) {
+                chPhaseIdx[i]++;
+                if (chPhaseIdx[i] < chNPhases[i])
+                    chCurrentPhaseEndUnix[i] += chPhaseDurSec[i][chPhaseIdx[i]];
+            }
+            if (chPhaseIdx[i] >= chNPhases[i]) {
+                chDone[i] = true;
+            } else {
+                char t = chPhaseType[i][chPhaseIdx[i]];
+                if      (t == 'h' || t == 'd') { holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC); }
+                else if (t == 'c')             { seqRatePIDs[i]->SetMode(AUTOMATIC); }
+                // 'p': both PIDs remain MANUAL
+            }
         }
-        for (int i = 0; i < nChannels; i++) holdSP[i] = DOSetpoint;
+        if (chDone[i]) {
+            Serial.print(F("MSG:CH")); Serial.print(i); Serial.println(F(" finished during outage"));
+        }
     }
 
-    // Re-open or create logfile
+    // Append restart marker to existing logfile then create today's log
     if (SD.exists(filename)) {
-        logFile = SD.open(filename, FILE_WRITE);
-        if (logFile) {
+        FsFile old = SD.open(filename, O_WRITE | O_AT_END);
+        if (old) {
             DateTime now = RTC.now();
-            lastLogDay = now.day();
-            logFile.print(F("RESTART;"));
-            logFile.print(now.year()); logFile.print('/');
-            logFile.print(now.month()); logFile.print('/');
-            logFile.print(now.day()); logFile.print(';');
-            logFile.print(now.hour()); logFile.print(':');
-            logFile.print(now.minute()); logFile.print(':');
-            logFile.print(now.second());
-            logFile.println(F(";Recovered from STATE.TXT"));
-            logFile.flush();
+            old.print(F("RESTART;")); old.print(now.year()); old.print('/');
+            old.print(now.month()); old.print('/'); old.print(now.day());
+            old.print(';'); old.print(now.hour()); old.print(':');
+            old.print(now.minute()); old.print(':'); old.println(now.second());
+            old.close();
         }
-    } else {
-        createLogfile();
     }
+    createLogfile();  // D7 will open/create the daily CSV
 
     state = RUNNING;
-    Serial.println(F("MSG:Recovered from STATE.TXT"));
-    lcd.clear(); lcd.print("Recovered!"); lcd.setCursor(0,1); lcd.print(filename);
+    Serial.println(F("MSG:Recovered"));
+    lcd.clear(); lcd.print(F("Recovered!")); lcd.setCursor(0, 1); lcd.print(filename);
     delay(1500);
 }
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  Run modes
+//  Main run loop  — core structure complete; phase logic STUB (Phases D4 + D5)
 // ═══════════════════════════════════════════════════════════════════════════════
-
-void runMeasure() {
+void runAllChannels() {
     loopStart = millis();
     double doVals[MAX_CHANNELS];
     double tempVals[2] = {0, 0};
 
+    // 1. Measure ALL channels unconditionally every cycle
     if (!measureAllChannels(doVals, tempVals)) {
         Serial.println(F("MSG:Sensor error"));
         if (++errorCount >= 50) resetFunc();
-        return;
-    }
-    errorCount = 0;
-    for (int i = 0; i < nChannels; i++) lastDO[i] = doVals[i];
-    lastTemp = tempVals[0]; lastTemp2 = tempVals[1];
-
-    uint32_t elapsedMs = (RTC.now().unixtime() - expStart.unixtime()) * 1000UL;
-    emitData(elapsedMs, doVals, tempVals, 0.0, 0, 'm');
-    writeToSD(doVals, tempVals, 0.0, 0, 'm');
-    writeState();
-    lcdUpdate(0.0, 'm');
-
-    long rem = sampInterval - (long)(millis() - loopStart);
-    if (rem > 0) delay(rem);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-void runSetpoint() {
-    if (RTC.now().unixtime() >= setpointEndUnix) {
-        Ardoxy::closeRelays(nChannels, relayPins);
-        ardoxy.end();
-        if (nSensors == 2) ardoxy2.end();
-        logFile.close();
-        Serial.println(F("DONE"));
-        lcd.clear(); lcd.print("DONE"); lcd.setCursor(0,1); lcd.print("Setpoint done");
-        state = IDLE;
-        return;
-    }
-
-    loopStart = millis();
-    double doVals[MAX_CHANNELS];
-    double tempVals[2] = {0, 0};
-
-    if (!measureAllChannels(doVals, tempVals)) {
-        Serial.println(F("MSG:Sensor error"));
-        if (++errorCount >= 50) resetFunc();
-        Ardoxy::closeRelays(nChannels, relayPins);
-        return;
-    }
-    errorCount = 0;
-    for (int i = 0; i < nChannels; i++) {
-        lastDO[i]  = doVals[i];
-        doInput[i] = doVals[i];
-        valvePIDs[i]->Compute();
-    }
-    lastTemp = tempVals[0]; lastTemp2 = tempVals[1];
-    Ardoxy::scheduleRelays(nChannels, doOutput, relayPins,
-                           sampInterval - ((long)nChannels * 40 + 500));
-
-    uint32_t elapsedMs = (RTC.now().unixtime() - expStart.unixtime()) * 1000UL;
-    emitData(elapsedMs, doVals, tempVals, DOSetpoint, 0, 's');
-    writeToSD(doVals, tempVals, DOSetpoint, 0, 's');
-    writeState();
-    lcdUpdate(DOSetpoint, 's');
-
-    long rem = sampInterval - (long)(millis() - loopStart);
-    if (rem > 0) delay(rem);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-void runSequence() {
-    if (phaseIdx >= nPhases) {
-        Ardoxy::closeRelays(nChannels, relayPins);
-        ardoxy.end();
-        if (nSensors == 2) ardoxy2.end();
-        logFile.close();
-        Serial.println(F("DONE"));
-        lcd.clear(); lcd.print("DONE"); lcd.setCursor(0,1); lcd.print("Sequence done");
-        state = IDLE;
-        return;
-    }
-
-    // RTC-based phase advance
-    uint32_t nowUnix = RTC.now().unixtime();
-    if (nowUnix >= phaseEndUnix[phaseIdx + 1]) {
-        phaseIdx++;
-        if (phaseIdx >= nPhases) return;   // caught at top of next call
-        if (phaseTypes[phaseIdx] == 'c') samplesSinceCalc = 0;
-        Serial.print(F("MSG:Phase ")); Serial.println(phaseIdx);
-        lcd.clear(); lcd.print("New phase "); lcd.print(phaseIdx + 1);
-    }
-
-    char ptype = phaseTypes[phaseIdx];
-
-    if (ptype == 'p') {
         Ardoxy::closeRelays(nChannels, relayPins);
         long rem = sampInterval - (long)(millis() - loopStart);
         if (rem > 0) delay(rem);
-        loopStart = millis();
-        return;
-    }
-
-    loopStart = millis();
-    double doVals[MAX_CHANNELS];
-    double tempVals[2] = {0, 0};
-
-    if (!measureAllChannels(doVals, tempVals)) {
-        Serial.println(F("MSG:Sensor error"));
-        if (++errorCount >= 50) resetFunc();
-        Ardoxy::closeRelays(nChannels, relayPins);
         return;
     }
     errorCount = 0;
     for (int i = 0; i < nChannels; i++) lastDO[i] = doVals[i];
     lastTemp = tempVals[0]; lastTemp2 = tempVals[1];
 
-    float currentSP = phaseSetpoints[phaseIdx];
+    // 2. Per-channel output computation
+    uint32_t nowUnix = RTC.now().unixtime();
 
-    if (ptype == 'h') {
-        for (int i = 0; i < nChannels; i++) {
-            holdSP[i]  = currentSP;
-            doInput[i] = doVals[i];
+    for (int i = 0; i < nChannels; i++) {
+        doInput[i]  = doVals[i];
+        doOutput[i] = 0;   // default: valve closed
+
+        // Done or pure-measure: no control
+        if (chDone[i] || chMode[i] == CH_MEASURE) continue;
+
+        // WAITING: scheduled start not yet reached
+        if (chStart[i] > nowUnix) continue;
+
+        // First activation: WAITING channel just became active this cycle
+        if (!chActive[i]) {
+            chActive[i]    = true;
+            doFloatPrev[i] = doVals[i];  // seed rate tracking
+            if (chMode[i] == CH_SETPOINT) {
+                holdSP[i] = chSetpoint[i];
+                valvePIDs[i]->SetMode(AUTOMATIC);
+            } else if (chMode[i] == CH_SEQUENCE && chNPhases[i] > 0) {
+                char t = chPhaseType[i][chPhaseIdx[i]];
+                if      (t == 'h' || t == 'd') { holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC); }
+                else if (t == 'c')             { seqRatePIDs[i]->SetMode(AUTOMATIC); }
+                // 'p': all PIDs remain MANUAL
+            }
+            Serial.print(F("MSG:CH")); Serial.print(i); Serial.println(F(" started"));
+        }
+
+        // ── SETPOINT ─────────────────────────────────────────────────────────
+        if (chMode[i] == CH_SETPOINT) {
+            if (nowUnix >= chSetpointEndUnix[i]) {
+                valvePIDs[i]->SetMode(MANUAL);
+                chDone[i] = true;
+                Serial.print(F("MSG:CH")); Serial.print(i); Serial.println(F(":DONE"));
+                continue;
+            }
+            holdSP[i] = chSetpoint[i];
             valvePIDs[i]->Compute();
-        }
-        Ardoxy::scheduleRelays(nChannels, doOutput, relayPins,
-                               sampInterval - ((long)nChannels * 40 + 500));
 
-    } else if (ptype == 'd') {
-        DateTime now = RTC.now();
-        float hourDecimal = now.hour() + now.minute() / 60.0f + now.second() / 3600.0f;
-        currentSP = dailyCycleSP(phaseIdx, hourDecimal);
-        for (int i = 0; i < nChannels; i++) {
-            holdSP[i]  = currentSP;
-            doInput[i] = doVals[i];
-            valvePIDs[i]->Compute();
-        }
-        Ardoxy::scheduleRelays(nChannels, doOutput, relayPins,
-                               sampInterval - ((long)nChannels * 40 + 500));
+        // ── SEQUENCE ─────────────────────────────────────────────────────────
+        } else if (chMode[i] == CH_SEQUENCE) {
+            if (chNPhases[i] == 0) { chDone[i] = true; continue; }
 
-    } else if (ptype == 'c') {
-        long phaseMsRem = (long)((long)(phaseEndUnix[phaseIdx + 1] - nowUnix) * 1000L);
-        float minRem = phaseMsRem / 60000.0;
-        if (minRem < 0.01) minRem = 0.01;
+            // Phase advance
+            if (nowUnix >= chCurrentPhaseEndUnix[i]) {
+                chPhaseIdx[i]++;
+                if (chPhaseIdx[i] >= chNPhases[i]) {
+                    valvePIDs[i]->SetMode(MANUAL);
+                    seqRatePIDs[i]->SetMode(MANUAL);
+                    chDone[i] = true;
+                    Serial.print(F("MSG:CH")); Serial.print(i); Serial.println(F(":DONE"));
+                    continue;
+                }
+                chCurrentPhaseEndUnix[i] += chPhaseDurSec[i][chPhaseIdx[i]];
+                chSampSince[i] = 0;
+                char nt = chPhaseType[i][chPhaseIdx[i]];
+                if      (nt == 'h' || nt == 'd') { seqRatePIDs[i]->SetMode(MANUAL); holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC); }
+                else if (nt == 'c')              { valvePIDs[i]->SetMode(MANUAL);    seqRatePIDs[i]->SetMode(AUTOMATIC); }
+                else                             { valvePIDs[i]->SetMode(MANUAL);    seqRatePIDs[i]->SetMode(MANUAL); }  // 'p'
+                Serial.print(F("MSG:CH")); Serial.print(i);
+                Serial.print(F(":phase ")); Serial.println(chPhaseIdx[i]);
+            }
 
-        samplesSinceCalc++;
-        rateReCalc = (int)round(60000.0 / sampInterval);
-        bool doRecalc = (samplesSinceCalc >= rateReCalc || samplesSinceCalc == 1);
-        for (int i = 0; i < nChannels; i++) {
-            if (doRecalc)
-                seqRateSP[i] = (phaseSetpoints[phaseIdx] - doVals[i]) / minRem;
-            seqRateInput[i] = (doVals[i] - doFloatPrev[i]) * 60.0
-                              / ((float)sampInterval / 1000.0);
-            seqRatePIDs[i]->Compute();
+            // Phase logic
+            byte pi = chPhaseIdx[i];
+            char pt = chPhaseType[i][pi];
+
+            if (pt == 'p') {
+                doOutput[i] = 0;
+
+            } else if (pt == 'h') {
+                holdSP[i] = chPhaseSP[i][pi];
+                valvePIDs[i]->Compute();
+
+            } else if (pt == 'd') {
+                DateTime now2 = RTC.now();
+                float hr = now2.hour() + now2.minute() / 60.0f + now2.second() / 3600.0f;
+                holdSP[i] = dailyCycleSP(chPhaseMinSP[i][pi], chPhaseMaxSP[i][pi],
+                                         chPhasePeakHour[i][pi], hr);
+                valvePIDs[i]->Compute();
+
+            } else if (pt == 'c') {
+                long secsRem = (long)(chCurrentPhaseEndUnix[i] - nowUnix);
+                float minRem = (secsRem > 0) ? secsRem / 60.0f : 0.01f;
+                chSampSince[i]++;
+                int rateN = (int)round(60000.0 / sampInterval);
+                if (chSampSince[i] >= rateN || chSampSince[i] == 1) {
+                    float needed = (doVals[i] - chPhaseSP[i][pi]) / minRem;
+                    seqRateSP[i] = (needed > 0.0f) ? needed : 0.0f;  // N2-only
+                    chSampSince[i] = 0;
+                }
+                seqRateInput[i] = (doVals[i] - doFloatPrev[i])
+                                  * 60.0f / ((float)sampInterval / 1000.0f);
+                seqRatePIDs[i]->Compute();
+            }
+
+            doFloatPrev[i] = doVals[i];
         }
-        if (doRecalc) samplesSinceCalc = 0;
-        Ardoxy::scheduleRelays(nChannels, doOutput, relayPins,
-                               sampInterval - ((long)nChannels * 40 + 500));
     }
 
-    for (int i = 0; i < nChannels; i++) doFloatPrev[i] = doVals[i];
+    // 3. Schedule relays (parallel-open, sequential-close by duration)
+    Ardoxy::scheduleRelays(nChannels, doOutput, relayPins,
+                           sampInterval - ((long)nChannels * 40 + 500));
 
-    uint32_t elapsedMs = (nowUnix - expStart.unixtime()) * 1000UL;
-    emitData(elapsedMs, doVals, tempVals, currentSP, phaseIdx, ptype);
-    writeToSD(doVals, tempVals, currentSP, phaseIdx, ptype);
+    // 4. Emit, log, persist, display
+    uint32_t elapsedMs = (RTC.now().unixtime() - expStartUnix) * 1000UL;
+    emitData(elapsedMs, doVals, tempVals);
+    writeToSD(doVals, tempVals);
     writeState();
-    lcdUpdate(currentSP, ptype);
+    lcdUpdate();
 
     long rem = sampInterval - (long)(millis() - loopStart);
     if (rem > 0) delay(rem);
@@ -904,10 +893,18 @@ void processCommand(char* buf) {
         if (strcmp_P(key, PSTR("RESUME")) == 0) {
             if (state == PAUSED) {
                 uint32_t pausedFor = RTC.now().unixtime() - pauseStartUnix;
-                // Shift phase boundaries and expStart so pause time is excluded
-                for (int i = 0; i <= nPhases; i++) phaseEndUnix[i] += pausedFor;
-                setpointEndUnix += pausedFor;
-                expStart = DateTime(expStart.unixtime() + pausedFor);
+                expStartUnix += pausedFor;
+                for (int i = 0; i < nChannels; i++) {
+                    if (chDone[i]) continue;
+                    if (chStart[i] > pauseStartUnix) {
+                        // WAITING channel: shift scheduled start forward
+                        chStart[i] += pausedFor;
+                    } else {
+                        // Active channel: shift end times forward
+                        chSetpointEndUnix[i]    += pausedFor;
+                        chCurrentPhaseEndUnix[i] += pausedFor;
+                    }
+                }
                 state = RUNNING;
                 Serial.println(F("ACK:OK"));
                 Serial.println(F("MSG:Running"));
@@ -923,7 +920,6 @@ void processCommand(char* buf) {
         }
 
         if (strcmp_P(key, PSTR("SETRTC")) == 0) {
-            // CMD:SETRTC:<Y>:<M>:<D>:<h>:<m>:<s>
             char* y  = strtok(NULL, ":");
             char* mo = strtok(NULL, ":");
             char* d  = strtok(NULL, ":");
@@ -954,21 +950,94 @@ void processCommand(char* buf) {
             Serial.println(F("ACK:ERR:Running")); return;
         }
         char* key = strtok(NULL, ":");
-        char* val = strtok(NULL, ":");
         if (key == NULL) return;
 
-        if (strcmp_P(key, PSTR("MODE")) == 0) {
-            if (!val) return;
-            if      (strcmp_P(val, PSTR("MEASURE")) == 0)  mode = MEASURE;
-            else if (strcmp_P(val, PSTR("SETPOINT")) == 0) mode = SETPOINT;
-            else if (strcmp_P(val, PSTR("SEQUENCE")) == 0) mode = SEQUENCE;
+        // ── per-channel config: CFG:CH:<ch>:<sub>[:<val>...] ─────────────────
+        if (strcmp_P(key, PSTR("CH")) == 0) {
+            char* chStr = strtok(NULL, ":");
+            char* sub   = strtok(NULL, ":");
+            if (!chStr || !sub) { Serial.println(F("ACK:ERR:CH fmt")); return; }
+            int ch = atoi(chStr);
+            if (ch < 0 || ch >= MAX_CHANNELS) { Serial.println(F("ACK:ERR:CH range")); return; }
 
-        } else if (strcmp_P(key, PSTR("NCHANNELS")) == 0) {
+            if (strcmp_P(sub, PSTR("MODE")) == 0) {
+                char* val = strtok(NULL, ":");
+                if (!val) { Serial.println(F("ACK:ERR:CH:MODE val")); return; }
+                if      (strcmp_P(val, PSTR("MEASURE")) == 0)  chMode[ch] = CH_MEASURE;
+                else if (strcmp_P(val, PSTR("SETPOINT")) == 0) chMode[ch] = CH_SETPOINT;
+                else if (strcmp_P(val, PSTR("SEQUENCE")) == 0) chMode[ch] = CH_SEQUENCE;
+                else { Serial.println(F("ACK:ERR:CH:MODE unknown")); return; }
+
+            } else if (strcmp_P(sub, PSTR("START")) == 0) {
+                // CFG:CH:<ch>:START:<Y>:<M>:<D>:<h>:<m>:<s>  (0:0:0:0:0:0 = immediate)
+                char* y  = strtok(NULL, ":"); char* mo = strtok(NULL, ":");
+                char* d  = strtok(NULL, ":"); char* h  = strtok(NULL, ":");
+                char* mi = strtok(NULL, ":"); char* s  = strtok(NULL, ":");
+                if (!y || !mo || !d || !h || !mi || !s) {
+                    Serial.println(F("ACK:ERR:CH:START fmt")); return;
+                }
+                int iy = atoi(y);
+                chStart[ch] = (iy == 0) ? 0
+                    : DateTime(iy, atoi(mo), atoi(d), atoi(h), atoi(mi), atoi(s)).unixtime();
+
+            } else if (strcmp_P(sub, PSTR("SETPOINT")) == 0) {
+                char* val = strtok(NULL, ":");
+                if (val) chSetpoint[ch] = atof(val);
+
+            } else if (strcmp_P(sub, PSTR("DURATION")) == 0) {
+                char* val = strtok(NULL, ":");
+                if (val) chDurationMin[ch] = atol(val);
+
+            } else if (strcmp_P(sub, PSTR("NPHASES")) == 0) {
+                char* val = strtok(NULL, ":");
+                if (val) chNPhases[ch] = (byte)constrain(atoi(val), 0, MAX_PHASES);
+
+            } else if (strcmp_P(sub, PSTR("PHASE")) == 0) {
+                // CFG:CH:<ch>:PHASE:<idx>:<sp>:<d>:<h>:<m>:<type>[:<minSP>:<maxSP>:<peakH>]
+                char* idxStr  = strtok(NULL, ":"); char* spStr = strtok(NULL, ":");
+                char* dStr    = strtok(NULL, ":"); char* hStr  = strtok(NULL, ":");
+                char* mStr    = strtok(NULL, ":"); char* tStr  = strtok(NULL, ":");
+                if (!idxStr || !spStr || !dStr || !hStr || !mStr || !tStr) {
+                    Serial.println(F("ACK:ERR:CH:PHASE fmt")); return;
+                }
+                int idx = atoi(idxStr);
+                if (idx < 0 || idx >= MAX_PHASES) {
+                    Serial.println(F("ACK:ERR:CH:PHASE idx")); return;
+                }
+                chPhaseSP[ch][idx]     = atof(spStr);
+                chPhaseDurSec[ch][idx] = (uint32_t)(atol(dStr) * 86400L
+                                                   + atol(hStr) * 3600L
+                                                   + atol(mStr) * 60L);
+                chPhaseType[ch][idx]   = tStr[0];
+                if (tStr[0] == 'd') {
+                    char* minStr  = strtok(NULL, ":");
+                    char* maxStr  = strtok(NULL, ":");
+                    char* peakStr = strtok(NULL, ":");
+                    if (!minStr || !maxStr || !peakStr) {
+                        Serial.println(F("ACK:ERR:CH:PHASE daily params")); return;
+                    }
+                    chPhaseMinSP[ch][idx]    = atof(minStr);
+                    chPhaseMaxSP[ch][idx]    = atof(maxStr);
+                    chPhasePeakHour[ch][idx] = atof(peakStr);
+                }
+
+            } else {
+                Serial.println(F("ACK:ERR:CH:sub unknown")); return;
+            }
+            state = CONFIGURED;
+            Serial.println(F("ACK:OK"));
+            return;
+        }
+
+        // ── shared hardware config (unchanged from v1) ────────────────────────
+        char* val = strtok(NULL, ":");
+
+        if (strcmp_P(key, PSTR("NCHANNELS")) == 0) {
             nChannels = constrain(atoi(val), 1, MAX_CHANNELS);
 
         } else if (strcmp_P(key, PSTR("SENSORS")) == 0) {
             nSensors = constrain(atoi(val), 1, 2);
-            if (nSensors == 1) s1Channels = nChannels;  // auto-sync
+            if (nSensors == 1) s1Channels = nChannels;
 
         } else if (strcmp_P(key, PSTR("S1CHANNELS")) == 0) {
             s1Channels = constrain(atoi(val), 1, MAX_CHANNELS - 1);
@@ -976,27 +1045,17 @@ void processCommand(char* buf) {
         } else if (strcmp_P(key, PSTR("RELAY")) == 0) {
             int ch = atoi(val);
             char* pinStr = strtok(NULL, ":");
-            if (ch >= 0 && ch < MAX_CHANNELS && pinStr)
-                relayPins[ch] = atoi(pinStr);
+            if (ch >= 0 && ch < MAX_CHANNELS && pinStr) relayPins[ch] = atoi(pinStr);
 
         } else if (strcmp_P(key, PSTR("INTERVAL")) == 0) {
             sampInterval = atol(val);
 
-        } else if (strcmp_P(key, PSTR("DURATION")) == 0) {
-            experimentDuration = atol(val);
-
         } else if (strcmp_P(key, PSTR("TANKID")) == 0) {
-            // CFG:TANKID:<ch>:<id>
             int ch = atoi(val);
             char* idStr = strtok(NULL, ":");
-            if (ch >= 0 && ch < MAX_CHANNELS && idStr)
-                strncpy(tankID[ch], idStr, 6);
-
-        } else if (strcmp_P(key, PSTR("SETPOINT")) == 0) {
-            DOSetpoint = atof(val);
+            if (ch >= 0 && ch < MAX_CHANNELS && idStr) strncpy(tankID[ch], idStr, 6);
 
         } else if (strcmp_P(key, PSTR("KP")) == 0) {
-            // CFG:KP:<ch>:<float>
             int ch = atoi(val);
             char* fStr = strtok(NULL, ":");
             if (ch >= 0 && ch < MAX_CHANNELS && fStr) Kp[ch] = atof(fStr);
@@ -1011,38 +1070,9 @@ void processCommand(char* buf) {
             char* fStr = strtok(NULL, ":");
             if (ch >= 0 && ch < MAX_CHANNELS && fStr) Kd[ch] = atof(fStr);
 
-        } else if (strcmp_P(key, PSTR("NPHASES")) == 0) {
-            nPhases = constrain(atoi(val), 0, MAX_PHASES);
-
-        } else if (strcmp_P(key, PSTR("PHASE")) == 0) {
-            // CFG:PHASE:<idx>:<sp>:<dur_d>:<dur_h>:<dur_m>:<type>[:<min_sp>:<max_sp>:<peak_h>]
-            int idx = atoi(val);
-            if (idx < 0 || idx >= MAX_PHASES) { Serial.println(F("ACK:ERR:Phase idx")); return; }
-            char* spStr   = strtok(NULL, ":");
-            char* dStr    = strtok(NULL, ":");
-            char* hStr    = strtok(NULL, ":");
-            char* mStr    = strtok(NULL, ":");
-            char* typeStr = strtok(NULL, ":");
-            if (!spStr || !dStr || !hStr || !mStr || !typeStr) {
-                Serial.println(F("ACK:ERR:Phase fmt")); return;
-            }
-            phaseSetpoints[idx] = atof(spStr);
-            phaseDurSec[idx]    = (uint32_t)(atol(dStr) * 86400L
-                                           + atol(hStr) * 3600L
-                                           + atol(mStr) * 60L);
-            phaseTypes[idx]     = typeStr[0];
-            if (typeStr[0] == 'd') {
-                char* minStr  = strtok(NULL, ":");
-                char* maxStr  = strtok(NULL, ":");
-                char* peakStr = strtok(NULL, ":");
-                if (minStr && maxStr && peakStr) {
-                    phaseMinSP[idx]    = atof(minStr);
-                    phaseMaxSP[idx]    = atof(maxStr);
-                    phasePeakHour[idx] = atof(peakStr);
-                } else {
-                    Serial.println(F("ACK:ERR:Daily-cycle params missing")); return;
-                }
-            }
+        } else {
+            // Removed in v2: CFG:MODE, CFG:SETPOINT, CFG:DURATION, CFG:NPHASES, CFG:PHASE
+            Serial.println(F("ACK:ERR:Unknown CFG key")); return;
         }
 
         state = CONFIGURED;
@@ -1076,15 +1106,13 @@ void readSerial() {
 // ═══════════════════════════════════════════════════════════════════════════════
 void setup() {
     Serial.begin(19200);
-    Serial.println(F("MSG:ArdoxyStandalone ready"));
+    Serial.println(F("MSG:ArdoxyStandalone v2 ready"));
 
-    // LCD
     lcd.begin(16, 2);
     lcd.setBacklight(WHITE);
     lcd.clear();
-    lcd.print(F("Ardoxy Standalone"));
+    lcd.print(F("Ardoxy v2"));
 
-    // I2C (RTC + LCD)
     Wire.begin();
 
     // RTC
@@ -1157,7 +1185,5 @@ void loop() {
 
     if (state == PAUSED || state != RUNNING) return;
 
-    if      (mode == MEASURE)  runMeasure();
-    else if (mode == SETPOINT) runSetpoint();
-    else if (mode == SEQUENCE) runSequence();
+    runAllChannels();
 }
