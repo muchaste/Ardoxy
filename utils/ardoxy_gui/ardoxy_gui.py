@@ -645,16 +645,22 @@ def handle_line(line: str):
             d = run_tab_ref._parse_data_line(line)
             if d:
                 run_tab_ref._update_chart_and_table(d)
+            elif hasattr(run_tab_ref, "_log"):
+                run_tab_ref._log(line)
 
     elif line.startswith("STATUS:"):
         state_str = line[7:]
         if connect_tab_ref:
             connect_tab_ref._arduino_state_var.set(state_str)
+        if run_tab_ref and hasattr(run_tab_ref, "_log"):
+            run_tab_ref._log(line)
 
     elif line.startswith("MSG:"):
         msg = line[4:]
         if connect_tab_ref:
             connect_tab_ref._msg_lbl.configure(text=msg)
+        if run_tab_ref and hasattr(run_tab_ref, "_log"):
+            run_tab_ref._log(line)
 
     elif line == "DONE":
         global running, paused
@@ -662,6 +668,8 @@ def handle_line(line: str):
         paused = False
         if run_tab_ref:
             run_tab_ref._set_state_stopped("Finished")
+        if run_tab_ref and hasattr(run_tab_ref, "_log"):
+            run_tab_ref._log("DONE")
 
     elif line == "__DISCONNECTED__":
         global connected
@@ -706,13 +714,423 @@ def build_live_ui(root):
 
 
 def build_standalone_ui(root):
-    """Build the Standalone Experiment UI (Phase C — not yet implemented)."""
+    """Build the Standalone Experiment UI (configure Arduino autonomously)."""
+    global connect_tab_ref, configure_tab_ref, run_tab_ref
+
     nb = ttk.Notebook(root)
     nb.pack(fill="both", expand=True, padx=6, pady=6)
-    frame = ttk.Frame(nb, padding=32)
-    nb.add(frame, text="Configure")
-    ttk.Label(frame, text="Standalone mode — coming soon.",
-              font=("", 11)).pack(pady=60)
+
+    # ── Tab 1: Connect (reused builder) ───────────────────────────────────────
+    connect_tab_ref = build_connect_tab(nb)
+
+    # ── Tab 2: Configure ──────────────────────────────────────────────────────
+    cfg_outer = ttk.Frame(nb, padding=0)
+    nb.add(cfg_outer, text="Configure")
+
+    # Scrollable inner form
+    _canvas = tk.Canvas(cfg_outer, borderwidth=0, highlightthickness=0)
+    _vsb = ttk.Scrollbar(cfg_outer, orient="vertical", command=_canvas.yview)
+    _canvas.configure(yscrollcommand=_vsb.set)
+    _vsb.pack(side="right", fill="y")
+    _canvas.pack(side="left", fill="both", expand=True)
+    inner = ttk.Frame(_canvas, padding=10)
+    _win = _canvas.create_window((0, 0), window=inner, anchor="nw")
+
+    def _on_inner_cfg(e):
+        _canvas.configure(scrollregion=_canvas.bbox("all"))
+    def _on_canvas_cfg(e):
+        _canvas.itemconfig(_win, width=e.width)
+    inner.bind("<Configure>", _on_inner_cfg)
+    _canvas.bind("<Configure>", _on_canvas_cfg)
+
+    # mouse-wheel scroll
+    def _on_wheel(e):
+        _canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+    _canvas.bind_all("<MouseWheel>", _on_wheel)
+
+    r = 0  # grid row counter
+
+    # Mode
+    lbl(inner, "Mode:").grid(row=r, column=0, sticky="w", pady=3)
+    mode_var = tk.StringVar(value="SEQUENCE")
+    ttk.Combobox(inner, textvariable=mode_var, width=14,
+                 values=["MEASURE", "SETPOINT", "SEQUENCE"],
+                 state="readonly").grid(row=r, column=1, sticky="w", padx=4)
+    r += 1
+
+    # Sensors
+    lbl(inner, "Sensors:").grid(row=r, column=0, sticky="w", pady=3)
+    nsensors_var = tk.IntVar(value=1)
+    _sf = ttk.Frame(inner)
+    _sf.grid(row=r, column=1, columnspan=5, sticky="w")
+    ttk.Radiobutton(_sf, text="1 FireSting",  variable=nsensors_var, value=1).pack(side="left")
+    ttk.Radiobutton(_sf, text="2 FireStings", variable=nsensors_var, value=2).pack(side="left", padx=8)
+    r += 1
+
+    # Channels on sensor 1
+    lbl(inner, "Channels on sensor 1:").grid(row=r, column=0, sticky="w", pady=3)
+    s1ch_var = tk.IntVar(value=1)
+    s1ch_spin = ttk.Spinbox(inner, from_=1, to=8, textvariable=s1ch_var, width=4)
+    s1ch_spin.grid(row=r, column=1, sticky="w", padx=4)
+    r += 1
+
+    # Channels on sensor 2
+    lbl(inner, "Channels on sensor 2:").grid(row=r, column=0, sticky="w", pady=3)
+    s2ch_var = tk.IntVar(value=4)
+    s2ch_spin = ttk.Spinbox(inner, from_=1, to=8, textvariable=s2ch_var, width=4)
+    s2ch_spin.grid(row=r, column=1, sticky="w", padx=4)
+    lbl(inner, "(only when 2 sensors)", foreground="grey").grid(
+        row=r, column=2, sticky="w", padx=4)
+    r += 1
+
+    def get_nch():
+        """Total channels = sensor-1 channels [+ sensor-2 channels if 2 sensors]."""
+        return s1ch_var.get() + (s2ch_var.get() if nsensors_var.get() == 2 else 0)
+
+    # Channel IDs  (2 rows × 4 cols)
+    tid_frame = ttk.LabelFrame(inner, text="Channel IDs", padding=6)
+    tid_frame.grid(row=r, column=0, columnspan=6, sticky="ew", pady=4)
+    tank_vars = [tk.StringVar(value=f"CH{i+1}") for i in range(8)]
+    tid_entries = []   # keep references for CH5-8 state toggling
+    for i in range(8):
+        ttk.Label(tid_frame, text=f"CH{i+1}:").grid(
+            row=i // 4, column=(i % 4) * 2, padx=(6, 0), pady=2)
+        ent = ttk.Entry(tid_frame, textvariable=tank_vars[i], width=7)
+        ent.grid(row=i // 4, column=(i % 4) * 2 + 1, padx=(2, 6), pady=2)
+        tid_entries.append(ent)
+    r += 1
+
+    def _toggle_sensor_count(*_):
+        ns = nsensors_var.get()
+        s2ch_spin.configure(state="normal" if ns == 2 else "disabled")
+        for i, ent in enumerate(tid_entries):
+            ent.configure(state="normal" if (i < 4 or ns == 2) else "disabled")
+
+    nsensors_var.trace_add("write", _toggle_sensor_count)
+    _toggle_sensor_count()
+
+    # Per-channel PID gains
+    pid_frame = ttk.LabelFrame(inner, text="PID gains per channel", padding=6)
+    pid_frame.grid(row=r, column=0, columnspan=6, sticky="ew", pady=4)
+    for col, txt in enumerate(("Ch", "Kp", "Ki", "Kd")):
+        ttk.Label(pid_frame, text=txt, font=("", 9, "bold")).grid(
+            row=0, column=col, padx=6)
+    kp_vars = [tk.StringVar(value="10.0") for _ in range(8)]
+    ki_vars = [tk.StringVar(value="1.0")  for _ in range(8)]
+    kd_vars = [tk.StringVar(value="0.0")  for _ in range(8)]
+    for i in range(8):
+        ttk.Label(pid_frame, text=str(i + 1)).grid(row=i + 1, column=0, padx=6, pady=1)
+        ttk.Entry(pid_frame, textvariable=kp_vars[i], width=8).grid(
+            row=i + 1, column=1, padx=4, pady=1)
+        ttk.Entry(pid_frame, textvariable=ki_vars[i], width=8).grid(
+            row=i + 1, column=2, padx=4, pady=1)
+        ttk.Entry(pid_frame, textvariable=kd_vars[i], width=8).grid(
+            row=i + 1, column=3, padx=4, pady=1)
+    r += 1
+
+    # Relay pins  (2 rows × 4 cols)
+    relay_frame = ttk.LabelFrame(inner, text="Relay pins", padding=6)
+    relay_frame.grid(row=r, column=0, columnspan=6, sticky="ew", pady=4)
+    _default_pins = [46, 48, 50, 52, 22, 24, 26, 28]
+    relay_vars = [tk.StringVar(value=str(_default_pins[i])) for i in range(8)]
+    for i in range(8):
+        ttk.Label(relay_frame, text=f"CH{i+1}:").grid(
+            row=i // 4, column=(i % 4) * 2, padx=(6, 0), pady=2)
+        ttk.Entry(relay_frame, textvariable=relay_vars[i], width=5).grid(
+            row=i // 4, column=(i % 4) * 2 + 1, padx=(2, 6), pady=2)
+    r += 1
+
+    # Timing
+    timing_frame = ttk.LabelFrame(inner, text="Timing", padding=6)
+    timing_frame.grid(row=r, column=0, columnspan=6, sticky="ew", pady=4)
+    interval_var = tk.StringVar(value="30000")
+    duration_var = tk.StringVar(value="1440")
+    ttk.Label(timing_frame, text="Interval (ms):").grid(row=0, column=0, sticky="w")
+    ttk.Entry(timing_frame, textvariable=interval_var, width=10).grid(
+        row=0, column=1, padx=4)
+    ttk.Label(timing_frame, text="Duration (min, SETPOINT):").grid(
+        row=0, column=2, sticky="w", padx=(16, 0))
+    duration_entry = ttk.Entry(timing_frame, textvariable=duration_var, width=8)
+    duration_entry.grid(row=0, column=3, padx=4)
+    r += 1
+
+    def _toggle_duration(*_):
+        duration_entry.configure(
+            state="disabled" if mode_var.get() == "SEQUENCE" else "normal")
+    mode_var.trace_add("write", _toggle_duration)
+    _toggle_duration()
+
+    # Setpoint panel
+    sp_frame = ttk.LabelFrame(inner, text="Setpoint mode", padding=6)
+    sp_frame.grid(row=r, column=0, columnspan=6, sticky="ew", pady=4)
+    sp_var = tk.StringVar(value="30.0")
+    ttk.Label(sp_frame, text="Setpoint (% air):").grid(row=0, column=0, sticky="w")
+    ttk.Entry(sp_frame, textvariable=sp_var, width=8).grid(row=0, column=1, padx=4)
+    r += 1
+
+    # Sequence phase table
+    seq_frame = ttk.LabelFrame(
+        inner, text="Sequence phases  (double-click a cell to edit)", padding=6)
+    seq_frame.grid(row=r, column=0, columnspan=6, sticky="ew", pady=4)
+
+    SEQ_COLS = ("Phase", "Type", "Days", "Hours", "Minutes",
+                "SP / minSP", "maxSP", "peakHour")
+    phase_tree = ttk.Treeview(seq_frame, columns=SEQ_COLS, show="headings", height=7)
+    _col_w = (46, 62, 46, 46, 58, 82, 62, 72)
+    for c, w in zip(SEQ_COLS, _col_w):
+        phase_tree.heading(c, text=c)
+        phase_tree.column(c, width=w, anchor="center")
+    phase_tree.pack(fill="x", pady=(0, 4))
+
+    btn_row_seq = ttk.Frame(seq_frame)
+    btn_row_seq.pack(fill="x")
+
+    def _add_phase():
+        n = len(phase_tree.get_children())
+        phase_tree.insert("", "end", values=(n + 1, "h", "0", "1", "0", "30.0", "", ""))
+
+    def _remove_phase():
+        sel = phase_tree.selection()
+        if sel:
+            phase_tree.delete(sel[0])
+            for i, iid in enumerate(phase_tree.get_children()):
+                v = list(phase_tree.item(iid, "values"))
+                v[0] = i + 1
+                phase_tree.item(iid, values=v)
+
+    def _edit_phase(event):
+        item = phase_tree.identify_row(event.y)
+        col_id = phase_tree.identify_column(event.x)
+        if not item or not col_id:
+            return
+        col_idx = int(col_id.lstrip("#")) - 1
+        if col_idx == 0:
+            return  # phase # is auto
+        x, y, w, h = phase_tree.bbox(item, col_id)
+        vals = list(phase_tree.item(item, "values"))
+        var = tk.StringVar(value=vals[col_idx])
+
+        if col_idx == 1:  # Type dropdown
+            _TYPE_OPTS = ["h — hold", "r — ramp", "d — daily cycle", "p — pause"]
+            _tmap = {"h": "h — hold", "r": "r — ramp",
+                     "d": "d — daily cycle", "p": "p — pause"}
+            var.set(_tmap.get(vals[col_idx], vals[col_idx]))
+            ew = ttk.Combobox(phase_tree, textvariable=var,
+                              values=_TYPE_OPTS, state="readonly", width=16)
+            ew.place(x=x, y=y, width=w + 60, height=h)
+            ew.focus()
+            def _commit_type(e=None):
+                vals[col_idx] = var.get()[0]
+                phase_tree.item(item, values=vals)
+                ew.destroy()
+            ew.bind("<<ComboboxSelected>>", _commit_type)
+            ew.bind("<FocusOut>", _commit_type)
+        else:
+            ew = ttk.Entry(phase_tree, textvariable=var, width=10)
+            ew.place(x=x, y=y, width=w, height=h)
+            ew.focus()
+            def _commit(e=None):
+                vals[col_idx] = var.get()
+                phase_tree.item(item, values=vals)
+                ew.destroy()
+            ew.bind("<Return>", _commit)
+            ew.bind("<FocusOut>", _commit)
+
+    phase_tree.bind("<Double-1>", _edit_phase)
+    ttk.Button(btn_row_seq, text="Add phase",
+               command=_add_phase).pack(side="left", padx=4)
+    ttk.Button(btn_row_seq, text="Remove selected",
+               command=_remove_phase).pack(side="left", padx=4)
+    ttk.Label(btn_row_seq,
+              text="For type 'd': SP/minSP = min DO, maxSP = max DO, peakHour = hour of max",
+              foreground="grey", font=("", 8)).pack(side="left", padx=12)
+    # Seed with two default phases
+    phase_tree.insert("", "end", values=(1, "h", "0", "1", "0", "50.0", "", ""))
+    phase_tree.insert("", "end", values=(2, "h", "0", "1", "0", "30.0", "", ""))
+    r += 1
+
+    # Action row: Sync RTC + Send & Save Config
+    cfg_status_var = tk.StringVar(value="")
+    action_row = ttk.Frame(inner)
+    action_row.grid(row=r, column=0, columnspan=6, sticky="ew", pady=10)
+
+    def _sync_rtc():
+        if not connected or not ser:
+            messagebox.showerror("Error", "Not connected.")
+            return
+        t = time.localtime()
+        cmd = (f"CMD:SETRTC:{t.tm_year}:{t.tm_mon}:{t.tm_mday}"
+               f":{t.tm_hour}:{t.tm_min}:{t.tm_sec}")
+        ok = send_and_ack(cmd)
+        cfg_status_var.set("RTC synced ✓" if ok else "RTC sync FAILED ✗")
+
+    ttk.Button(action_row, text="Sync RTC to PC clock",
+               command=_sync_rtc).pack(side="left", padx=4)
+
+    send_btn = ttk.Button(action_row, text="Send & Save Config", state="disabled")
+    send_btn.pack(side="left", padx=8)
+    ttk.Label(action_row, textvariable=cfg_status_var,
+              foreground="blue").pack(side="left", padx=4)
+    r += 1
+
+    def _validate_and_send():
+        if not connected or not ser:
+            messagebox.showerror("Error", "Not connected to Arduino.")
+            return
+        m    = mode_var.get()
+        ns   = nsensors_var.get()
+        nch  = get_nch()
+        s1ch = s1ch_var.get()
+
+        cfg_status_var.set("Sending…")
+        inner.update_idletasks()
+
+        _n = [0]
+        def ack(cmd):
+            _n[0] += 1
+            cfg_status_var.set(f"Sending command {_n[0]}…")
+            inner.update_idletasks()
+            return send_and_ack(cmd)
+
+        ok = True
+        ok = ok and ack(f"CFG:MODE:{m}")
+        ok = ok and ack(f"CFG:NCHANNELS:{nch}")
+        ok = ok and ack(f"CFG:SENSORS:{ns}")
+        if ns == 2:
+            ok = ok and ack(f"CFG:S1CHANNELS:{s1ch}")
+        ok = ok and ack(f"CFG:INTERVAL:{interval_var.get()}")
+        ok = ok and ack(f"CFG:DURATION:{duration_var.get()}")
+
+        for i in range(nch):
+            ok = ok and ack(f"CFG:TANKID:{i}:{tank_vars[i].get()}")
+            ok = ok and ack(f"CFG:KP:{i}:{kp_vars[i].get()}")
+            ok = ok and ack(f"CFG:KI:{i}:{ki_vars[i].get()}")
+            ok = ok and ack(f"CFG:KD:{i}:{kd_vars[i].get()}")
+            ok = ok and ack(f"CFG:RELAY:{i}:{relay_vars[i].get()}")
+
+        if m == "SETPOINT":
+            ok = ok and ack(f"CFG:SETPOINT:{sp_var.get()}")
+
+        elif m == "SEQUENCE":
+            rows = phase_tree.get_children()
+            ok = ok and ack(f"CFG:NPHASES:{len(rows)}")
+            for idx, iid in enumerate(rows):
+                v = phase_tree.item(iid, "values")
+                ptype, d, h_d, mi, sp, maxsp, peak = (
+                    v[1], v[2], v[3], v[4], v[5],
+                    v[6] if v[6] else "0",
+                    v[7] if v[7] else "0"
+                )
+                if ptype == "d":
+                    ok = ok and ack(
+                        f"CFG:PHASE:{idx}:{ptype}:{d}:{h_d}:{mi}:{sp}:{maxsp}:{peak}")
+                else:
+                    ok = ok and ack(
+                        f"CFG:PHASE:{idx}:{ptype}:{d}:{h_d}:{mi}:{sp}")
+
+        if ok:
+            ok = ok and ack("CMD:SAVECONFIG")
+
+        cfg_status_var.set(
+            "Config sent & saved ✓" if ok else "FAILED — check serial log ✗")
+
+    send_btn.configure(command=_validate_and_send)
+    cfg_outer._send_btn = send_btn
+    configure_tab_ref = cfg_outer
+
+    # ── Tab 3: Run & Monitor ──────────────────────────────────────────────────
+    run_frame = ttk.Frame(nb, padding=8)
+    nb.add(run_frame, text="Run & Monitor")
+
+    ctrl_bar = ttk.Frame(run_frame)
+    ctrl_bar.pack(fill="x", pady=(0, 6))
+
+    sa_start_btn  = ttk.Button(ctrl_bar, text="▶  Start")
+    sa_start_btn.pack(side="left", padx=4)
+    sa_pause_btn  = ttk.Button(ctrl_bar, text="⏸  Pause",  state="disabled")
+    sa_pause_btn.pack(side="left", padx=4)
+    sa_resume_btn = ttk.Button(ctrl_bar, text="▶  Resume", state="disabled")
+    sa_resume_btn.pack(side="left", padx=4)
+    sa_stop_btn   = ttk.Button(ctrl_bar, text="■  Stop",   state="disabled")
+    sa_stop_btn.pack(side="left", padx=4)
+
+    sa_info_var = tk.StringVar(value="Idle")
+    ttk.Label(ctrl_bar, textvariable=sa_info_var,
+              foreground="grey").pack(side="left", padx=12)
+
+    # Serial log
+    log_frame = ttk.LabelFrame(run_frame, text="Serial log", padding=4)
+    log_frame.pack(fill="both", expand=True)
+    log_text = tk.Text(log_frame, state="disabled", wrap="word",
+                       height=24, font=("Courier New", 9))
+    _log_scroll = ttk.Scrollbar(log_frame, orient="vertical",
+                                command=log_text.yview)
+    log_text.configure(yscrollcommand=_log_scroll.set)
+    _log_scroll.pack(side="right", fill="y")
+    log_text.pack(fill="both", expand=True)
+
+    def _sa_log(msg):
+        log_text.configure(state="normal")
+        log_text.insert("end", msg + "\n")
+        log_text.configure(state="disabled")
+        log_text.yview_moveto(1.0)
+
+    def _sa_set_running():
+        sa_start_btn.configure(state="disabled")
+        sa_pause_btn.configure(state="normal")
+        sa_resume_btn.configure(state="disabled")
+        sa_stop_btn.configure(state="normal")
+        sa_info_var.set("Running…")
+
+    def _sa_set_state_paused():
+        sa_pause_btn.configure(state="disabled")
+        sa_resume_btn.configure(state="normal")
+        sa_info_var.set("Paused")
+
+    def _sa_set_state_stopped(msg="Stopped"):
+        sa_start_btn.configure(state="normal")
+        sa_pause_btn.configure(state="disabled")
+        sa_resume_btn.configure(state="disabled")
+        sa_stop_btn.configure(state="disabled")
+        sa_info_var.set(msg)
+
+    def _sa_do_start():
+        if not connected or not ser:
+            messagebox.showerror("Error", "Not connected.")
+            return
+        send("CMD:START")
+        _sa_set_running()
+
+    def _sa_do_pause():
+        send("CMD:PAUSE")
+        _sa_set_state_paused()
+
+    def _sa_do_resume():
+        send("CMD:RESUME")
+        _sa_set_running()
+
+    def _sa_do_stop():
+        send("CMD:STOP")
+        _sa_set_state_stopped()
+
+    sa_start_btn.configure(command=_sa_do_start)
+    sa_pause_btn.configure(command=_sa_do_pause)
+    sa_resume_btn.configure(command=_sa_do_resume)
+    sa_stop_btn.configure(command=_sa_do_stop)
+
+    # Wire required attributes for handle_line()
+    run_frame._parse_data_line      = lambda line: None   # log via _log; no chart
+    run_frame._update_chart_and_table = lambda d: None
+    run_frame._info_var             = sa_info_var
+    run_frame._start_btn            = sa_start_btn
+    run_frame._pause_btn            = sa_pause_btn
+    run_frame._stop_btn             = sa_stop_btn
+    run_frame._set_state_stopped    = _sa_set_state_stopped
+    run_frame._set_state_paused     = _sa_set_state_paused
+    run_frame._log                  = _sa_log
+    run_tab_ref = run_frame
+
+    root.after(100, poll_queue, root)
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
