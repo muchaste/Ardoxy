@@ -786,56 +786,33 @@ def build_standalone_ui(root):
         return s1ch_var.get() + (s2ch_var.get() if nsensors_var.get() == 2 else 0)
 
     # Channel IDs  (2 rows × 4 cols)
-    tid_frame = ttk.LabelFrame(inner, text="Channel IDs", padding=6)
-    tid_frame.grid(row=r, column=0, columnspan=6, sticky="ew", pady=4)
-    tank_vars = [tk.StringVar(value=f"CH{i+1}") for i in range(8)]
-    tid_entries = []   # keep references for CH5-8 state toggling
+    # ── Unified channel settings table (ID, Kp, Ki, Kd, relay — one row/channel) ──
+    ch_settings_frame = ttk.LabelFrame(inner, text="Channel settings", padding=6)
+    ch_settings_frame.grid(row=r, column=0, columnspan=6, sticky="ew", pady=4)
+    for _col, _htxt in enumerate(("Ch", "Channel ID", "Kp", "Ki", "Kd", "Relay pin")):
+        ttk.Label(ch_settings_frame, text=_htxt,
+                  font=("", 9, "bold")).grid(row=0, column=_col, padx=6, pady=2, sticky="w")
+    tank_vars       = [tk.StringVar(value=f"CH{i+1}") for i in range(8)]
+    kp_vars         = [tk.StringVar(value="10.0") for _ in range(8)]
+    ki_vars         = [tk.StringVar(value="1.0")  for _ in range(8)]
+    kd_vars         = [tk.StringVar(value="0.0")  for _ in range(8)]
+    _default_pins   = [46, 48, 50, 52, 22, 24, 26, 28]
+    relay_vars      = [tk.StringVar(value=str(_default_pins[i])) for i in range(8)]
+    _ch_row_widgets = []   # per-channel list of Entry widgets for enable/disable
     for i in range(8):
-        ttk.Label(tid_frame, text=f"CH{i+1}:").grid(
-            row=i // 4, column=(i % 4) * 2, padx=(6, 0), pady=2)
-        ent = ttk.Entry(tid_frame, textvariable=tank_vars[i], width=7)
-        ent.grid(row=i // 4, column=(i % 4) * 2 + 1, padx=(2, 6), pady=2)
-        tid_entries.append(ent)
-    r += 1
-
-    def _toggle_sensor_count(*_):
-        ns = nsensors_var.get()
-        s2ch_spin.configure(state="normal" if ns == 2 else "disabled")
-        for i, ent in enumerate(tid_entries):
-            ent.configure(state="normal" if (i < 4 or ns == 2) else "disabled")
-
-    nsensors_var.trace_add("write", _toggle_sensor_count)
-    _toggle_sensor_count()
-
-    # Per-channel PID gains
-    pid_frame = ttk.LabelFrame(inner, text="PID gains per channel", padding=6)
-    pid_frame.grid(row=r, column=0, columnspan=6, sticky="ew", pady=4)
-    for col, txt in enumerate(("Ch", "Kp", "Ki", "Kd")):
-        ttk.Label(pid_frame, text=txt, font=("", 9, "bold")).grid(
-            row=0, column=col, padx=6)
-    kp_vars = [tk.StringVar(value="10.0") for _ in range(8)]
-    ki_vars = [tk.StringVar(value="1.0")  for _ in range(8)]
-    kd_vars = [tk.StringVar(value="0.0")  for _ in range(8)]
-    for i in range(8):
-        ttk.Label(pid_frame, text=str(i + 1)).grid(row=i + 1, column=0, padx=6, pady=1)
-        ttk.Entry(pid_frame, textvariable=kp_vars[i], width=8).grid(
-            row=i + 1, column=1, padx=4, pady=1)
-        ttk.Entry(pid_frame, textvariable=ki_vars[i], width=8).grid(
-            row=i + 1, column=2, padx=4, pady=1)
-        ttk.Entry(pid_frame, textvariable=kd_vars[i], width=8).grid(
-            row=i + 1, column=3, padx=4, pady=1)
-    r += 1
-
-    # Relay pins  (2 rows × 4 cols)
-    relay_frame = ttk.LabelFrame(inner, text="Relay pins", padding=6)
-    relay_frame.grid(row=r, column=0, columnspan=6, sticky="ew", pady=4)
-    _default_pins = [46, 48, 50, 52, 22, 24, 26, 28]
-    relay_vars = [tk.StringVar(value=str(_default_pins[i])) for i in range(8)]
-    for i in range(8):
-        ttk.Label(relay_frame, text=f"CH{i+1}:").grid(
-            row=i // 4, column=(i % 4) * 2, padx=(6, 0), pady=2)
-        ttk.Entry(relay_frame, textvariable=relay_vars[i], width=5).grid(
-            row=i // 4, column=(i % 4) * 2 + 1, padx=(2, 6), pady=2)
+        ttk.Label(ch_settings_frame, text=str(i + 1)).grid(
+            row=i + 1, column=0, padx=6, pady=2)
+        _e_id  = ttk.Entry(ch_settings_frame, textvariable=tank_vars[i],  width=9)
+        _e_kp  = ttk.Entry(ch_settings_frame, textvariable=kp_vars[i],   width=7)
+        _e_ki  = ttk.Entry(ch_settings_frame, textvariable=ki_vars[i],   width=7)
+        _e_kd  = ttk.Entry(ch_settings_frame, textvariable=kd_vars[i],   width=7)
+        _e_rly = ttk.Entry(ch_settings_frame, textvariable=relay_vars[i], width=5)
+        _e_id.grid( row=i + 1, column=1, padx=4, pady=2)
+        _e_kp.grid( row=i + 1, column=2, padx=4, pady=2)
+        _e_ki.grid( row=i + 1, column=3, padx=4, pady=2)
+        _e_kd.grid( row=i + 1, column=4, padx=4, pady=2)
+        _e_rly.grid(row=i + 1, column=5, padx=4, pady=2)
+        _ch_row_widgets.append([_e_id, _e_kp, _e_ki, _e_kd, _e_rly])
     r += 1
 
     # Timing
@@ -861,6 +838,7 @@ def build_standalone_ui(root):
     ch_nb = ttk.Notebook(ch_cfg_outer)
     ch_nb.pack(fill="both", expand=True)
 
+    _seq_clipboard    = []   # shared copy/paste clipboard for sequence phases
     ch_mode_vars      = []
     ch_immediate_vars = []
     ch_start_y_vars   = []
@@ -1006,10 +984,34 @@ def build_standalone_ui(root):
             return _ch_edit
 
         _pt.bind("<Double-1>", _make_ch_edit())
+        def _make_ch_copy(_pt=_pt):
+            def _ch_copy():
+                _seq_clipboard.clear()
+                for _iid in _pt.get_children():
+                    _seq_clipboard.append(_pt.item(_iid, "values"))
+            return _ch_copy
+
+        def _make_ch_paste(_pt=_pt):
+            def _ch_paste():
+                if not _seq_clipboard:
+                    messagebox.showinfo("Paste sequence", "Clipboard is empty.")
+                    return
+                for _iid in _pt.get_children():
+                    _pt.delete(_iid)
+                for _ii, _row in enumerate(_seq_clipboard):
+                    _rv = list(_row)
+                    _rv[0] = _ii + 1   # renumber
+                    _pt.insert("", "end", values=_rv)
+            return _ch_paste
+
         ttk.Button(_pb, text="Add phase",
                    command=_make_ch_add()).pack(side="left", padx=4)
         ttk.Button(_pb, text="Remove selected",
                    command=_make_ch_remove()).pack(side="left", padx=4)
+        ttk.Button(_pb, text="Copy sequence",
+                   command=_make_ch_copy()).pack(side="left", padx=4)
+        ttk.Button(_pb, text="Paste sequence",
+                   command=_make_ch_paste()).pack(side="left", padx=4)
         ttk.Label(_pb,
                   text="For 'd': SP/minSP=min DO, maxSP=max DO, peakHour=h of max",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
@@ -1034,9 +1036,15 @@ def build_standalone_ui(root):
 
     r += 1
 
-    # Enable/disable channel tabs based on active channel count
-    def _update_ch_tabs(*_):
+    # Update channel table rows + notebook tabs based on active channel count
+    def _update_active_channels(*_):
+        ns  = nsensors_var.get()
         nch = get_nch()
+        s2ch_spin.configure(state="normal" if ns == 2 else "disabled")
+        for _ii, _row_w in enumerate(_ch_row_widgets):
+            _s = "normal" if _ii < nch else "disabled"
+            for _w in _row_w:
+                _w.configure(state=_s)
         for _ii in range(8):
             ch_nb.tab(_ii, state="normal" if _ii < nch else "disabled")
         try:
@@ -1045,10 +1053,10 @@ def build_standalone_ui(root):
         except Exception:
             pass
 
-    nsensors_var.trace_add("write", _update_ch_tabs)
-    s1ch_var.trace_add("write", _update_ch_tabs)
-    s2ch_var.trace_add("write", _update_ch_tabs)
-    _update_ch_tabs()
+    nsensors_var.trace_add("write", _update_active_channels)
+    s1ch_var.trace_add("write", _update_active_channels)
+    s2ch_var.trace_add("write", _update_active_channels)
+    _update_active_channels()
 
     # Action row: Sync RTC + Send & Save Config
     cfg_status_var = tk.StringVar(value="")
@@ -1070,6 +1078,8 @@ def build_standalone_ui(root):
 
     send_btn = ttk.Button(action_row, text="Send & Save Config", state="disabled")
     send_btn.pack(side="left", padx=8)
+    ttk.Button(action_row, text="Export Config…",
+               command=lambda: _export_config()).pack(side="left", padx=4)
     ttk.Label(action_row, textvariable=cfg_status_var,
               foreground="blue").pack(side="left", padx=4)
     r += 1
@@ -1143,6 +1153,73 @@ def build_standalone_ui(root):
 
         cfg_status_var.set(
             "Config sent & saved ✓" if ok else "FAILED — check serial log ✗")
+
+    def _export_config():
+        """Save current GUI configuration as CONFIG.TXT (key=value) to a PC file."""
+        ns   = nsensors_var.get()
+        nch  = get_nch()
+        s1ch = s1ch_var.get()
+        lines = []
+        lines.append(f"NCHANNELS={nch}")
+        lines.append(f"NSENSORS={ns}")
+        if ns == 2:
+            lines.append(f"S1CHANNELS={s1ch}")
+        lines.append(f"INTERVAL={interval_var.get()}")
+        for i in range(nch):
+            lines.append(f"RELAY_{i}={relay_vars[i].get()}")
+        for i in range(nch):
+            lines.append(f"TANKID_{i}={tank_vars[i].get()}")
+            lines.append(f"KP_{i}={kp_vars[i].get()}")
+            lines.append(f"KI_{i}={ki_vars[i].get()}")
+            lines.append(f"KD_{i}={kd_vars[i].get()}")
+        _mode_int = {"MEASURE": 0, "SETPOINT": 1, "SEQUENCE": 2}
+        for i in range(nch):
+            m = ch_mode_vars[i].get()
+            lines.append(f"CH_{i}_MODE={_mode_int[m]}")
+            if ch_immediate_vars[i].get():
+                lines.append(f"CH_{i}_START=0")
+            else:
+                try:
+                    _t = time.struct_time((
+                        int(ch_start_y_vars[i].get()),
+                        int(ch_start_mo_vars[i].get()),
+                        int(ch_start_d_vars[i].get()),
+                        int(ch_start_h_vars[i].get()),
+                        int(ch_start_mi_vars[i].get()),
+                        0, 0, 0, -1))
+                    lines.append(f"CH_{i}_START={int(time.mktime(_t))}")
+                except ValueError:
+                    lines.append(f"CH_{i}_START=0")
+            if m == "SETPOINT":
+                lines.append(f"CH_{i}_SETPOINT={ch_sp_vars[i].get()}")
+                lines.append(f"CH_{i}_DUR_MIN={ch_dur_vars[i].get()}")
+            elif m == "SEQUENCE":
+                rows = ch_phase_trees[i].get_children()
+                lines.append(f"CH_{i}_NPHASES={len(rows)}")
+                for j, iid in enumerate(rows):
+                    v = ch_phase_trees[i].item(iid, "values")
+                    ptype = v[1]
+                    dur_sec = (int(v[2]) * 86400 + int(v[3]) * 3600
+                               + int(v[4]) * 60)
+                    sp = v[5]
+                    maxsp = v[6] if v[6] else "0"
+                    peak  = v[7] if v[7] else "0"
+                    if ptype == "d":
+                        lines.append(
+                            f"CH_{i}_PHASE_{j}={sp},{dur_sec},{ptype},{sp},{maxsp},{peak}")
+                    else:
+                        lines.append(f"CH_{i}_PHASE_{j}={sp},{dur_sec},{ptype}")
+        path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            title="Export CONFIG.TXT",
+            initialfile="CONFIG.TXT"
+        )
+        if not path:
+            return
+        with open(path, "w", newline="\n") as f:
+            f.write("\n".join(lines) + "\n")
+        cfg_status_var.set("Config exported ✓")
 
     send_btn.configure(command=_validate_and_send)
     cfg_outer._send_btn = send_btn
