@@ -59,7 +59,7 @@ Ardoxy offers two complementary ways to use the system, depending on how much co
 
 Ardoxy-OS consists of two parts:
 
-* **`examples/ardoxy_os/ardoxy_os.ino`** — a general-purpose Arduino sketch that is uploaded once. It sits idle until configured from the PC and supports all control modes without re-uploading.
+* **`examples/ardoxy_live/ardoxy_live.ino`** — a general-purpose Arduino sketch that is uploaded once. It sits idle until configured from the PC and supports all control modes without re-uploading.
 * **`utils/ardoxy_gui/ardoxy_gui.py`** — a Python GUI application that connects to the Arduino over USB serial, configures the experiment, starts/stops measurement and control, and plots and logs the results in real time.
 
 ### Requirements
@@ -89,7 +89,7 @@ matplotlib
    pip install -r utils/ardoxy_gui/requirements.txt
    ```
 
-3. **Upload the OS sketch.** Open `examples/ardoxy_os/ardoxy_os.ino` in the Arduino IDE, select your board and port, and upload. This only needs to be done once.
+3. **Upload the live sketch.** Open `examples/ardoxy_live/ardoxy_live.ino` in the Arduino IDE, select your board and port, and upload. This only needs to be done once.
 
 4. **Connect hardware.** Wire the FireSting oxygen meter to the Arduino as described in the dedicated sketches (RX=pin 8, TX=pin 9 by default). Connect relay modules to the digital output pins you intend to use for valve control.
 

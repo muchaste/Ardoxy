@@ -692,18 +692,65 @@ def poll_queue(root):
     root.after(100, poll_queue, root)
 
 
+# ── UI factories ──────────────────────────────────────────────────────────────
+
+def build_live_ui(root):
+    """Build the Live Experiment UI (tethered to PC via USB serial)."""
+    global connect_tab_ref, configure_tab_ref, run_tab_ref
+    nb = ttk.Notebook(root)
+    nb.pack(fill="both", expand=True, padx=6, pady=6)
+    connect_tab_ref = build_connect_tab(nb)
+    configure_tab_ref = build_configure_tab(nb)
+    run_tab_ref = build_run_tab(nb)
+    root.after(100, poll_queue, root)
+
+
+def build_standalone_ui(root):
+    """Build the Standalone Experiment UI (Phase C — not yet implemented)."""
+    nb = ttk.Notebook(root)
+    nb.pack(fill="both", expand=True, padx=6, pady=6)
+    frame = ttk.Frame(nb, padding=32)
+    nb.add(frame, text="Configure")
+    ttk.Label(frame, text="Standalone mode — coming soon.",
+              font=("", 11)).pack(pady=60)
+
+
 # ── main ──────────────────────────────────────────────────────────────────────
 
 root = tk.Tk()
-root.title("Ardoxy-OS")
+root.title("Ardoxy")
 root.minsize(860, 680)
 
-nb = ttk.Notebook(root)
-nb.pack(fill="both", expand=True, padx=6, pady=6)
 
-connect_tab_ref = build_connect_tab(nb)
-configure_tab_ref = build_configure_tab(nb)
-run_tab_ref = build_run_tab(nb)
+def _launch(mode: str):
+    splash.destroy()
+    root.title(f"Ardoxy \u2014 {mode}")
+    if mode == "live":
+        build_live_ui(root)
+    else:
+        build_standalone_ui(root)
 
-root.after(100, poll_queue, root)
+
+# ── mode-selection splash ─────────────────────────────────────────────────────
+splash = ttk.Frame(root, padding=40)
+splash.pack(fill="both", expand=True)
+
+ttk.Label(splash, text="Ardoxy", font=("", 32, "bold")).pack(pady=(80, 8))
+ttk.Label(splash, text="Select experiment mode to continue:",
+          font=("", 12), foreground="grey").pack(pady=(0, 48))
+
+_btn_row = ttk.Frame(splash)
+_btn_row.pack()
+ttk.Button(_btn_row, text="Live Experiment",
+           command=lambda: _launch("live"),
+           width=26).pack(side="left", padx=24)
+ttk.Button(_btn_row, text="Standalone Experiment",
+           command=lambda: _launch("standalone"),
+           width=26).pack(side="left", padx=24)
+
+ttk.Label(splash,
+          text="Live: Arduino connected to PC via USB.    "
+               "Standalone: Arduino runs autonomously with SD card.",
+          foreground="grey", font=("", 9)).pack(pady=(24, 0))
+
 root.mainloop()

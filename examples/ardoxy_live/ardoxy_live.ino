@@ -1,6 +1,7 @@
 /*
-  ardoxy_os.ino
-  Ardoxy Operating System Sketch — upload once, configure via ardoxy_gui.py
+  ardoxy_live.ino
+  Ardoxy Live Experiment Sketch — upload once, configure via ardoxy_gui.py
+  Requires a permanent USB serial connection to a PC running ardoxy_gui.py.
 
   Protocol (USB serial, 19200 baud, newline-terminated):
     PC -> Arduino:
