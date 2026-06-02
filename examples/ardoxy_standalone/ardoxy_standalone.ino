@@ -82,7 +82,7 @@
 #define RECV_BUF     96
 #define CHIP_SELECT  10         // Adafruit datalogger shield
 #define LCD_PAGE_INTERVAL 2000UL  // ms between automatic LCD page changes
-#define LCD_REFRESH_MS      1000UL   // ms between LCD content redraws
+#define LCD_REFRESH_MS      2000UL   // ms between LCD content redraws
 
 // ─── hardware instances ───────────────────────────────────────────────────────
 Ardoxy              ardoxy(Serial1);          // FireSting 1 on Serial1 (MEGA pins 18/19)
@@ -596,8 +596,14 @@ void initHardware() {
     lcdPage           = 0;
     lcdLastPageChange = 0;
     lcdLastRefresh    = 0;
-    ardoxy.begin();
-    if (nSensors == 2) ardoxy2.begin();
+    bool ok1 = ardoxy.begin();
+    bool ok2 = (nSensors == 2) ? ardoxy2.begin() : true;
+    if (!ok1 || !ok2) {
+        Serial.println(F("MSG:Sensor connection failed — resetting in 5s"));
+        lcd.clear(); lcd.print(F("Sensor FAILED")); lcd.setCursor(0, 1); lcd.print(F("Resetting..."));
+        delay(5000);
+        resetFunc();
+    }
 }
 
 
@@ -726,10 +732,20 @@ void runAllChannels() {
     // 1. Measure ALL channels unconditionally every cycle
     if (!measureAllChannels(doVals, tempVals)) {
         Serial.println(F("MSG:Sensor error"));
-        if (++errorCount >= 50) resetFunc();
+        if (++errorCount >= 5) {
+            Serial.println(F("MSG:Too many sensor errors — resetting in 3s"));
+            lcd.clear(); lcd.print(F("Sensor errors")); lcd.setCursor(0, 1); lcd.print(F("Resetting..."));
+            Ardoxy::closeRelays(nChannels, relayPins);
+            delay(3000);
+            resetFunc();
+        }
         Ardoxy::closeRelays(nChannels, relayPins);
         long rem = sampInterval - (long)(millis() - loopStart);
-        if (rem > 0) delay(rem);
+        while (rem > 0) {
+            delay(rem > 500L ? 500L : rem);
+            lcdUpdate();
+            rem = sampInterval - (long)(millis() - loopStart);
+        }
         return;
     }
     errorCount = 0;
