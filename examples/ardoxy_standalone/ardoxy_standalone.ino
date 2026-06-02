@@ -81,7 +81,8 @@
 #define MAX_PHASES   6          // phases per channel (was 10 global in v1)
 #define RECV_BUF     96
 #define CHIP_SELECT  10         // Adafruit datalogger shield
-#define LCD_PAGE_INTERVAL 10000UL  // ms between automatic LCD page changes
+#define LCD_PAGE_INTERVAL 2000UL  // ms between automatic LCD page changes
+#define LCD_REFRESH_MS      1000UL   // ms between LCD content redraws
 
 // ─── hardware instances ───────────────────────────────────────────────────────
 Ardoxy              ardoxy(Serial1);          // FireSting 1 on Serial1 (MEGA pins 18/19)
@@ -180,6 +181,7 @@ bool     sdReady   = false;
 int           lcdPage           = 0;
 int           lcdNumPages       = 1;
 unsigned long lcdLastPageChange = 0;
+unsigned long lcdLastRefresh    = 0;
 double lastTemp    = 0.0;   // sensor 1 temperature
 double lastTemp2   = 0.0;   // sensor 2 temperature (2-sensor mode only)
 double lastDO[MAX_CHANNELS] = {0};
@@ -261,10 +263,15 @@ void emitData(uint32_t elapsedMs, double* doVals, double* tempVals) {
 //  Pages cycle automatically every 10 s
 // ═══════════════════════════════════════════════════════════════════════════════
 void lcdUpdate() {
-    if (millis() - lcdLastPageChange >= LCD_PAGE_INTERVAL) {
+    unsigned long now_ms = millis();
+    bool pageChanged = false;
+    if (now_ms - lcdLastPageChange >= LCD_PAGE_INTERVAL) {
         lcdPage = (lcdPage + 1) % lcdNumPages;
-        lcdLastPageChange = millis();
+        lcdLastPageChange = now_ms;
+        pageChanged = true;
     }
+    if (!pageChanged && (now_ms - lcdLastRefresh < LCD_REFRESH_MS)) return;
+    lcdLastRefresh = now_ms;
 
     lcd.clear();
 
@@ -588,6 +595,7 @@ void initHardware() {
     lcdNumPages       = nChannels + 1;
     lcdPage           = 0;
     lcdLastPageChange = 0;
+    lcdLastRefresh    = 0;
     ardoxy.begin();
     if (nSensors == 2) ardoxy2.begin();
 }
@@ -841,7 +849,11 @@ void runAllChannels() {
     lcdUpdate();
 
     long rem = sampInterval - (long)(millis() - loopStart);
-    if (rem > 0) delay(rem);
+    while (rem > 0) {
+        delay(rem > 500L ? 500L : rem);
+        lcdUpdate();
+        rem = sampInterval - (long)(millis() - loopStart);
+    }
 }
 
 
