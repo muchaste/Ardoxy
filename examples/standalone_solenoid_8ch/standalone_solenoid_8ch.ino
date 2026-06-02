@@ -357,9 +357,15 @@ void setup() {
   Serial.begin(19200);
   delay(300);
   Serial.println("------ Ardoxy 8-channel standalone control ------");
-  FireSting1.begin();
+  if (!FireSting1.begin()) {
+    Serial.println("Sensor 1 connection failed — check wiring and power.");
+    while (1);
+  }
   delay(500);
-  FireSting2.begin();
+  if (!FireSting2.begin()) {
+    Serial.println("Sensor 2 connection failed — check wiring and power.");
+    while (1);
+  }
 
   windowSize = (long)round((double)sampleInterval / (200.0 * 2));
 
@@ -538,8 +544,8 @@ void loop() {
           lcd.clear(); lcd.setCursor(0, 0); lcd.print("Com error!");
           errorCount++;
           if (errorCount >= 50) { resetFunc(); }
-          if (i < s1ChannelNumber) { FireSting1.end(); delay(1000); FireSting1.begin(); }
-          else                     { FireSting2.end(); delay(1000); FireSting2.begin(); }
+          if (i < s1ChannelNumber) { FireSting1.end(); delay(1000); if (!FireSting1.begin()) { Serial.println("Reconnect S1 failed"); } }
+          else                     { FireSting2.end(); delay(1000); if (!FireSting2.begin()) { Serial.println("Reconnect S2 failed"); } }
           delay(2000);
         }
       }

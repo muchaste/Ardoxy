@@ -158,9 +158,11 @@ void loop() {
   if (Serial.available() > 0) {
     switch(Serial.read()){
       case '1':
+          if (!ardoxy.begin()) {                                    // Start serial communication with FireSting
+              Serial.println("Connection failed — check wiring");
+              break;
+          }
           startTrigger = true;
-          ardoxy.begin();                                           // Start serial communication with FireSting
-          
           // Define phase timestamps
           progStart = millis();
           phaseMarks[0] = progStart;

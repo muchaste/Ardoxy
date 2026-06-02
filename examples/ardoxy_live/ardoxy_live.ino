@@ -341,7 +341,10 @@ void processCommand(char* buf) {
                 Ardoxy::configurePID(*seqRatePIDs[i], 0, Ki, 0, sampInterval, windowSize);
                 seqRatePIDs[i]->SetMode(MANUAL);
             }
-            ardoxy.begin();
+            if (!ardoxy.begin()) {
+                Serial.println(F("ACK:ERR:Sensor connection failed"));
+                return;
+            }
 
             progStart = millis();
 

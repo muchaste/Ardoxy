@@ -131,8 +131,11 @@ void loop() {
   if (Serial.available() > 0) {
     switch(Serial.read()){
       case '1':
+          if (!ardoxy.begin()) {                                    // Start serial communication with FireSting
+              Serial.println("Connection failed — check wiring");
+              break;
+          }
           startTrigger = true;
-          ardoxy.begin();                                           // Start serial communication with FireSting
           for (int i = 0; i < channelNumber; i++) {
             Serial.print("Air_sat_ch_");
             Serial.print(channelArray[i]);

@@ -428,7 +428,10 @@ void setup() {
   Serial.begin(19200);
   delay(300);
   Serial.println("-------------- Ardoxy 4 channel control example -------------");
-  ardoxy.begin();
+  if (!ardoxy.begin()) {
+    Serial.println("Sensor connection failed — check wiring and power.");
+    while (1);
+  }
   windowSize = (long)round((double)sampleInterval / (200.0 * 2));
     
 //# Set up one PID per channel #
@@ -659,7 +662,7 @@ void loop() {
           if (errorCount >= 50) { resetFunc(); }
           ardoxy.end();
           delay(1000);
-          ardoxy.begin();
+          if (!ardoxy.begin()) { Serial.println("Reconnect failed"); }
           delay(2000);
         }
       }

@@ -122,8 +122,11 @@ void loop() {
   if (Serial.available() > 0) {
     switch(Serial.read()){
       case '1':
+          if (!ardoxy.begin()) {                         // Start serial communication with FireSting
+              Serial.println("Connection failed — check wiring");
+              break;
+          }
           startTrigger = true;
-          ardoxy.begin();                                 // Start serial communication with FireSting
           Serial.println("DO_air_sat;Temp_deg_C;Open_steps");
           // Define time points for decrease end and trial end
           progStart = millis();

@@ -48,7 +48,10 @@ void setup() {
   Serial.begin(19200);
   delay(100);
   Serial.println("-------------- Ardoxy measure and plot example -------------");
-  ardoxy.begin();
+  if (!ardoxy.begin()) {
+    Serial.println("Connection failed — check wiring and power.");
+    while (1);
+  }
   ardoxy.setTempComp(1);
   Serial.println("FireSting channel: 1");
   Serial.print("Measurement interval (ms): ");
