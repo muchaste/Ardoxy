@@ -19,7 +19,7 @@ class Ardoxy
   public:
     Ardoxy( HardwareSerial& device) {hwStream = &device;}
     Ardoxy( SoftwareSerial& device) {swStream = &device;}
-    void begin();
+    bool begin();
     void end();
     int getVer();
     int setTempComp(int channel);

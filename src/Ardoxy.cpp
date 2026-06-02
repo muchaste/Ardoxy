@@ -9,7 +9,7 @@
 #include <PID_v1.h>
 
 // Begin function to establish connection and set baud rate to 19200 if necessary
-void Ardoxy::begin()
+bool Ardoxy::begin()
 {
     // Attempt connection at 19200
     if (establishConnection(19200)) {
@@ -26,19 +26,20 @@ void Ardoxy::begin()
         // Reinitialize at 19200
         if (!establishConnection(19200)) {
             Serial.println("Failed to switch to Baudrate 19200");
-            return;
+            return false;
         }
         Serial.println("Baudrate successfully switched to 19200");
     } 
     else {
         Serial.println("Failed to establish connection at any baudrate");
-        return;
+        return false;
     }
 
     // Retrieve firmware version
     ver = getVer();
     Serial.print("Firmware Version: ");
     Serial.println(ver);
+    return true;
 }
 
 // End function
