@@ -81,6 +81,7 @@
 #define MAX_PHASES   6          // phases per channel (was 10 global in v1)
 #define RECV_BUF     96
 #define CHIP_SELECT  10         // Adafruit datalogger shield
+#define LCD_PAGE_INTERVAL 10000UL  // ms between automatic LCD page changes
 
 // ─── hardware instances ───────────────────────────────────────────────────────
 Ardoxy              ardoxy(Serial1);          // FireSting 1 on Serial1 (MEGA pins 18/19)
@@ -176,8 +177,9 @@ int      lastLogDay = 0;
 bool     sdReady   = false;
 
 // ─── LCD state ────────────────────────────────────────────────────────────────
-int    lcdPage     = 0;
-int    lcdNumPages = 1;
+int           lcdPage           = 0;
+int           lcdNumPages       = 1;
+unsigned long lcdLastPageChange = 0;
 double lastTemp    = 0.0;   // sensor 1 temperature
 double lastTemp2   = 0.0;   // sensor 2 temperature (2-sensor mode only)
 double lastDO[MAX_CHANNELS] = {0};
@@ -255,34 +257,32 @@ void emitData(uint32_t elapsedMs, double* doVals, double* tempVals) {
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  LCD update: page 0 = elapsed + temps; pages 1..n = per-channel detail
-//  LEFT/RIGHT buttons cycle pages; SELECT returns to page 0
+//  LCD update: page 0 = current datetime; pages 1..n = per-channel detail
+//  Pages cycle automatically every 10 s
 // ═══════════════════════════════════════════════════════════════════════════════
 void lcdUpdate() {
-    uint8_t btns = lcd.readButtons();
-    if      (btns & BUTTON_RIGHT)  lcdPage = (lcdPage + 1) % lcdNumPages;
-    else if (btns & BUTTON_LEFT)   lcdPage = (lcdPage + lcdNumPages - 1) % lcdNumPages;
-    else if (btns & BUTTON_SELECT) lcdPage = 0;
+    if (millis() - lcdLastPageChange >= LCD_PAGE_INTERVAL) {
+        lcdPage = (lcdPage + 1) % lcdNumPages;
+        lcdLastPageChange = millis();
+    }
 
     lcd.clear();
 
     if (lcdPage == 0) {
-        // Page 0: elapsed time (line 0) + temperatures (line 1)
-        uint32_t elapsed = RTC.now().unixtime() - expStartUnix;
-        uint16_t eh = (uint16_t)(elapsed / 3600UL);
-        uint8_t  em = (elapsed % 3600UL) / 60;
-        uint8_t  es =  elapsed % 60;
+        // Page 0: current date (line 0) + current time (line 1)
+        DateTime now = RTC.now();
         lcd.setCursor(0, 0);
-        lcd.print(F("T="));
-        if (eh < 10) lcd.print('0'); lcd.print(eh);
-        lcd.print('h');
-        if (em < 10) lcd.print('0'); lcd.print(em);
-        lcd.print('m');
-        if (es < 10) lcd.print('0'); lcd.print(es);
-        lcd.print('s');
+        lcd.print(now.year());
+        lcd.print('/');
+        if (now.month()  < 10) lcd.print('0'); lcd.print(now.month());
+        lcd.print('/');
+        if (now.day()    < 10) lcd.print('0'); lcd.print(now.day());
         lcd.setCursor(0, 1);
-        lcd.print(F("T1:")); lcd.print(lastTemp, 1);
-        if (nSensors == 2) { lcd.print(F(" T2:")); lcd.print(lastTemp2, 1); }
+        if (now.hour()   < 10) lcd.print('0'); lcd.print(now.hour());
+        lcd.print(':');
+        if (now.minute() < 10) lcd.print('0'); lcd.print(now.minute());
+        lcd.print(':');
+        if (now.second() < 10) lcd.print('0'); lcd.print(now.second());
 
     } else {
         int i = lcdPage - 1;
@@ -585,8 +585,9 @@ void initHardware() {
         Ardoxy::configurePID(*seqRatePIDs[i], 0, Ki[i], 0, sampInterval, windowSize);
         seqRatePIDs[i]->SetMode(MANUAL);
     }
-    lcdNumPages = nChannels + 1;
-    lcdPage = 0;
+    lcdNumPages       = nChannels + 1;
+    lcdPage           = 0;
+    lcdLastPageChange = 0;
     ardoxy.begin();
     if (nSensors == 2) ardoxy2.begin();
 }
