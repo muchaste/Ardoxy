@@ -766,16 +766,16 @@ def build_standalone_ui(root):
     r += 1
 
     # Channels on sensor 1
-    lbl(inner, "Channels on sensor 1:").grid(row=r, column=0, sticky="w", pady=3)
+    lbl(inner, "Channels on sensor 1 (Serial 1):").grid(row=r, column=0, sticky="w", pady=3)
     s1ch_var = tk.IntVar(value=1)
-    s1ch_spin = ttk.Spinbox(inner, from_=1, to=8, textvariable=s1ch_var, width=4)
+    s1ch_spin = ttk.Spinbox(inner, from_=1, to=4, textvariable=s1ch_var, width=4)
     s1ch_spin.grid(row=r, column=1, sticky="w", padx=4)
     r += 1
 
     # Channels on sensor 2
-    lbl(inner, "Channels on sensor 2:").grid(row=r, column=0, sticky="w", pady=3)
+    lbl(inner, "Channels on sensor 2 (Serial 2):").grid(row=r, column=0, sticky="w", pady=3)
     s2ch_var = tk.IntVar(value=4)
-    s2ch_spin = ttk.Spinbox(inner, from_=1, to=8, textvariable=s2ch_var, width=4)
+    s2ch_spin = ttk.Spinbox(inner, from_=1, to=4, textvariable=s2ch_var, width=4)
     s2ch_spin.grid(row=r, column=1, sticky="w", padx=4)
     lbl(inner, "(only when 2 sensors)", foreground="grey").grid(
         row=r, column=2, sticky="w", padx=4)
@@ -1080,6 +1080,8 @@ def build_standalone_ui(root):
     send_btn.pack(side="left", padx=8)
     ttk.Button(action_row, text="Export Config…",
                command=lambda: _export_config()).pack(side="left", padx=4)
+    ttk.Button(action_row, text="Import Config…",
+               command=lambda: _import_config()).pack(side="left", padx=4)
     ttk.Label(action_row, textvariable=cfg_status_var,
               foreground="blue").pack(side="left", padx=4)
     r += 1
@@ -1220,6 +1222,111 @@ def build_standalone_ui(root):
         with open(path, "w", newline="\n") as f:
             f.write("\n".join(lines) + "\n")
         cfg_status_var.set("Config exported ✓")
+
+    def _import_config():
+        """Load a previously exported CONFIG.TXT and populate all GUI variables."""
+        path = filedialog.askopenfilename(
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+            title="Import CONFIG.TXT"
+        )
+        if not path:
+            return
+        cfg = {}
+        with open(path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line or "=" not in line:
+                    continue
+                key, _, val = line.partition("=")
+                cfg[key.strip()] = val.strip()
+
+        _mode_str = {"0": "MEASURE", "1": "SETPOINT", "2": "SEQUENCE"}
+
+        # ── sensor / channel counts (traces fire _update_active_channels) ──
+        ns  = int(cfg.get("NSENSORS", "1"))
+        nch = int(cfg.get("NCHANNELS", "1"))
+        nsensors_var.set(ns)
+        if ns == 2:
+            s1ch = int(cfg.get("S1CHANNELS", str(nch)))
+            s2ch = nch - s1ch
+            s1ch_var.set(s1ch)
+            s2ch_var.set(max(1, s2ch))
+        else:
+            s1ch_var.set(nch)
+
+        # ── interval ──
+        if "INTERVAL" in cfg:
+            interval_var.set(cfg["INTERVAL"])
+
+        # ── per-channel settings table ──
+        for i in range(nch):
+            if f"RELAY_{i}" in cfg:
+                relay_vars[i].set(cfg[f"RELAY_{i}"])
+            if f"TANKID_{i}" in cfg:
+                tank_vars[i].set(cfg[f"TANKID_{i}"])
+            if f"KP_{i}" in cfg:
+                kp_vars[i].set(cfg[f"KP_{i}"])
+            if f"KI_{i}" in cfg:
+                ki_vars[i].set(cfg[f"KI_{i}"])
+            if f"KD_{i}" in cfg:
+                kd_vars[i].set(cfg[f"KD_{i}"])
+
+        # ── per-channel mode, start time, setpoint / sequence ──
+        for i in range(nch):
+            # mode (trace auto-shows/hides SETPOINT or SEQUENCE panel)
+            m_str = _mode_str.get(cfg.get(f"CH_{i}_MODE", "0"), "MEASURE")
+            ch_mode_vars[i].set(m_str)
+
+            # start time
+            start_ts = int(cfg.get(f"CH_{i}_START", "0"))
+            if start_ts == 0:
+                ch_immediate_vars[i].set(True)
+            else:
+                ch_immediate_vars[i].set(False)
+                _lt = time.localtime(start_ts)
+                ch_start_y_vars[i].set(str(_lt.tm_year))
+                ch_start_mo_vars[i].set(str(_lt.tm_mon))
+                ch_start_d_vars[i].set(str(_lt.tm_mday))
+                ch_start_h_vars[i].set(str(_lt.tm_hour))
+                ch_start_mi_vars[i].set(str(_lt.tm_min))
+
+            # SETPOINT fields
+            if m_str == "SETPOINT":
+                if f"CH_{i}_SETPOINT" in cfg:
+                    ch_sp_vars[i].set(cfg[f"CH_{i}_SETPOINT"])
+                if f"CH_{i}_DUR_MIN" in cfg:
+                    ch_dur_vars[i].set(cfg[f"CH_{i}_DUR_MIN"])
+
+            # SEQUENCE phases
+            elif m_str == "SEQUENCE":
+                _pt = ch_phase_trees[i]
+                _pt.delete(*_pt.get_children())
+                n_phases = int(cfg.get(f"CH_{i}_NPHASES", "0"))
+                for j in range(n_phases):
+                    phase_val = cfg.get(f"CH_{i}_PHASE_{j}", "")
+                    if not phase_val:
+                        continue
+                    parts = phase_val.split(",")
+                    if len(parts) < 3:
+                        continue
+                    sp      = parts[0]
+                    dur_sec = int(parts[1])
+                    ptype   = parts[2]
+                    days    = dur_sec // 86400
+                    rem     = dur_sec % 86400
+                    hours   = rem // 3600
+                    minutes = (rem % 3600) // 60
+                    if ptype == "d" and len(parts) >= 6:
+                        maxsp = parts[4]
+                        peak  = parts[5]
+                    else:
+                        maxsp = ""
+                        peak  = ""
+                    _pt.insert("", "end",
+                               values=(j + 1, ptype, days, hours, minutes,
+                                       sp, maxsp, peak))
+
+        cfg_status_var.set("Config imported ✓")
 
     send_btn.configure(command=_validate_and_send)
     cfg_outer._send_btn = send_btn
