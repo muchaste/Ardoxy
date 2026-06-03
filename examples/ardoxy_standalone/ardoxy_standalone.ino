@@ -275,6 +275,12 @@ void lcdUpdate() {
 
     lcd.clear();
 
+    if (errorCount > 0) {
+        lcd.setCursor(0, 0); lcd.print(F("Sensor error!"));
+        lcd.setCursor(0, 1); lcd.print(F("Err ")); lcd.print(errorCount); lcd.print(F("/5"));
+        return;
+    }
+
     if (lcdPage == 0) {
         // Page 0: current date (line 0) + current time (line 1)
         DateTime now = RTC.now();
@@ -740,6 +746,7 @@ void runAllChannels() {
             resetFunc();
         }
         Ardoxy::closeRelays(nChannels, relayPins);
+        lcdLastRefresh = 0;   // force immediate LCD redraw on first poll
         long rem = sampInterval - (long)(millis() - loopStart);
         while (rem > 0) {
             delay(rem > 500L ? 500L : rem);
