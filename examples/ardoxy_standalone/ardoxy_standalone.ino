@@ -121,7 +121,7 @@ byte     chPhaseIdx[MAX_CHANNELS];                   // current phase index per 
 uint32_t chCurrentPhaseEndUnix[MAX_CHANNELS];        // rolling end of current phase
 bool     chDone[MAX_CHANNELS];                       // channel finished → passive MEASURE
 bool     chActive[MAX_CHANNELS];                     // false until chStart time arrives (WAITING)
-byte     chSampSince[MAX_CHANNELS];                  // samples since last rate recalc ('c' phase)
+float    chPhaseStartDO[MAX_CHANNELS];               // DO at start of 'c' (change) phase
 
 // ─── per-channel phase arrays (2-D: [channel][phase]) ─────────────────────────
 float    chPhaseSP[MAX_CHANNELS][MAX_PHASES];        // hold / change target DO
@@ -147,18 +147,6 @@ PID valvePID7(&doInput[7], &doOutput[7], &holdSP[7], 10,1,0, REVERSE);
 PID* valvePIDs[MAX_CHANNELS] = {&valvePID0,&valvePID1,&valvePID2,&valvePID3,
                                  &valvePID4,&valvePID5,&valvePID6,&valvePID7};
 
-double seqRateInput[MAX_CHANNELS] = {0};
-double seqRateSP[MAX_CHANNELS]    = {0};
-PID seqRatePID0(&seqRateInput[0],&doOutput[0],&seqRateSP[0],0,1,0,REVERSE);
-PID seqRatePID1(&seqRateInput[1],&doOutput[1],&seqRateSP[1],0,1,0,REVERSE);
-PID seqRatePID2(&seqRateInput[2],&doOutput[2],&seqRateSP[2],0,1,0,REVERSE);
-PID seqRatePID3(&seqRateInput[3],&doOutput[3],&seqRateSP[3],0,1,0,REVERSE);
-PID seqRatePID4(&seqRateInput[4],&doOutput[4],&seqRateSP[4],0,1,0,REVERSE);
-PID seqRatePID5(&seqRateInput[5],&doOutput[5],&seqRateSP[5],0,1,0,REVERSE);
-PID seqRatePID6(&seqRateInput[6],&doOutput[6],&seqRateSP[6],0,1,0,REVERSE);
-PID seqRatePID7(&seqRateInput[7],&doOutput[7],&seqRateSP[7],0,1,0,REVERSE);
-PID* seqRatePIDs[MAX_CHANNELS] = {&seqRatePID0,&seqRatePID1,&seqRatePID2,&seqRatePID3,
-                                   &seqRatePID4,&seqRatePID5,&seqRatePID6,&seqRatePID7};
 
 // ─── serial receive buffer ────────────────────────────────────────────────────
 char recvBuf[RECV_BUF];
@@ -250,7 +238,7 @@ void emitData(uint32_t elapsedMs, double* doVals, double* tempVals) {
             } else if (chNPhases[i] > 0) {
                 byte pi = chPhaseIdx[i];
                 char pt = chPhaseType[i][pi];
-                sp = (pt == 'h' || pt == 'd') ? (float)holdSP[i] : chPhaseSP[i][pi];
+                sp = (pt == 'p') ? 0.0f : (float)holdSP[i];
             }
         }
         Serial.println(sp, 2);
@@ -594,10 +582,6 @@ void initHardware() {
     for (int i = 0; i < nChannels; i++) {
         Ardoxy::configurePID(*valvePIDs[i], Kp[i], Ki[i], Kd[i], sampInterval, windowSize);
     }
-    for (int i = 0; i < nChannels; i++) {
-        Ardoxy::configurePID(*seqRatePIDs[i], 0, Ki[i], 0, sampInterval, windowSize);
-        seqRatePIDs[i]->SetMode(MANUAL);
-    }
     lcdNumPages       = nChannels + 1;
     lcdPage           = 0;
     lcdLastPageChange = 0;
@@ -622,10 +606,10 @@ void startExperiment() {
     rowN = 0;
 
     for (int i = 0; i < nChannels; i++) {
-        chPhaseIdx[i]  = 0;
-        chDone[i]      = false;
-        chSampSince[i] = 0;
-        doFloatPrev[i] = 0.0;
+        chPhaseIdx[i]    = 0;
+        chDone[i]        = false;
+        chPhaseStartDO[i] = 0.0f;
+        doFloatPrev[i]   = 0.0;
 
         // Normalise chStart: 0 means "start immediately at CMD:START"
         if (chStart[i] == 0) chStart[i] = expStartUnix;
@@ -648,7 +632,8 @@ void startExperiment() {
                     holdSP[i] = chPhaseSP[i][0];
                     valvePIDs[i]->SetMode(AUTOMATIC);
                 } else if (t == 'c') {
-                    seqRatePIDs[i]->SetMode(AUTOMATIC);
+                    chPhaseStartDO[i] = 0.0f;  // sentinel: set from first measurement
+                    valvePIDs[i]->SetMode(AUTOMATIC);
                 }
                 // 'p': all PIDs remain MANUAL (relays closed)
             }
@@ -672,8 +657,8 @@ void recoverExperiment() {
     uint32_t nowUnix = RTC.now().unixtime();
 
     for (int i = 0; i < nChannels; i++) {
-        chSampSince[i] = 0;
-        chActive[i]    = (chStart[i] <= nowUnix);
+        chPhaseStartDO[i] = 0.0f;
+        chActive[i]       = (chStart[i] <= nowUnix);
 
         if (chDone[i] || chMode[i] == CH_MEASURE || !chActive[i]) continue;
 
@@ -697,7 +682,7 @@ void recoverExperiment() {
             } else {
                 char t = chPhaseType[i][chPhaseIdx[i]];
                 if      (t == 'h' || t == 'd') { holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC); }
-                else if (t == 'c')             { seqRatePIDs[i]->SetMode(AUTOMATIC); }
+                else if (t == 'c')             { chPhaseStartDO[i] = 0.0f; valvePIDs[i]->SetMode(AUTOMATIC); }
                 // 'p': both PIDs remain MANUAL
             }
         }
@@ -782,7 +767,7 @@ void runAllChannels() {
             } else if (chMode[i] == CH_SEQUENCE && chNPhases[i] > 0) {
                 char t = chPhaseType[i][chPhaseIdx[i]];
                 if      (t == 'h' || t == 'd') { holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC); }
-                else if (t == 'c')             { seqRatePIDs[i]->SetMode(AUTOMATIC); }
+                else if (t == 'c')             { chPhaseStartDO[i] = doVals[i]; valvePIDs[i]->SetMode(AUTOMATIC); }
                 // 'p': all PIDs remain MANUAL
             }
             Serial.print(F("MSG:CH")); Serial.print(i); Serial.println(F(" started"));
@@ -808,17 +793,15 @@ void runAllChannels() {
                 chPhaseIdx[i]++;
                 if (chPhaseIdx[i] >= chNPhases[i]) {
                     valvePIDs[i]->SetMode(MANUAL);
-                    seqRatePIDs[i]->SetMode(MANUAL);
                     chDone[i] = true;
                     Serial.print(F("MSG:CH")); Serial.print(i); Serial.println(F(":DONE"));
                     continue;
                 }
                 chCurrentPhaseEndUnix[i] += chPhaseDurSec[i][chPhaseIdx[i]];
-                chSampSince[i] = 0;
                 char nt = chPhaseType[i][chPhaseIdx[i]];
-                if      (nt == 'h' || nt == 'd') { seqRatePIDs[i]->SetMode(MANUAL); holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC); }
-                else if (nt == 'c')              { valvePIDs[i]->SetMode(MANUAL);    seqRatePIDs[i]->SetMode(AUTOMATIC); }
-                else                             { valvePIDs[i]->SetMode(MANUAL);    seqRatePIDs[i]->SetMode(MANUAL); }  // 'p'
+                if      (nt == 'h' || nt == 'd') { holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC); }
+                else if (nt == 'c')              { chPhaseStartDO[i] = doVals[i]; valvePIDs[i]->SetMode(AUTOMATIC); }
+                else                             { valvePIDs[i]->SetMode(MANUAL); }  // 'p'
                 Serial.print(F("MSG:CH")); Serial.print(i);
                 Serial.print(F(":phase ")); Serial.println(chPhaseIdx[i]);
             }
@@ -842,18 +825,14 @@ void runAllChannels() {
                 valvePIDs[i]->Compute();
 
             } else if (pt == 'c') {
-                long secsRem = (long)(chCurrentPhaseEndUnix[i] - nowUnix);
-                float minRem = (secsRem > 0) ? secsRem / 60.0f : 0.01f;
-                chSampSince[i]++;
-                int rateN = (int)round(60000.0 / sampInterval);
-                if (chSampSince[i] >= rateN || chSampSince[i] == 1) {
-                    float needed = (doVals[i] - chPhaseSP[i][pi]) / minRem;
-                    seqRateSP[i] = (needed > 0.0f) ? needed : 0.0f;  // N2-only
-                    chSampSince[i] = 0;
-                }
-                seqRateInput[i] = (doVals[i] - doFloatPrev[i])
-                                  * 60.0f / ((float)sampInterval / 1000.0f);
-                seqRatePIDs[i]->Compute();
+                // Linear ramp: interpolate from phase-start DO to target DO over phase duration
+                if (chPhaseStartDO[i] <= 0.0f) chPhaseStartDO[i] = (float)doVals[i];
+                uint32_t phaseStartUnix = chCurrentPhaseEndUnix[i] - chPhaseDurSec[i][pi];
+                float elapsed = (nowUnix > phaseStartUnix) ? (float)(nowUnix - phaseStartUnix) : 0.0f;
+                float total   = (float)chPhaseDurSec[i][pi];
+                float frac    = (total > 0.0f) ? min(elapsed / total, 1.0f) : 1.0f;
+                holdSP[i]     = chPhaseStartDO[i] + (chPhaseSP[i][pi] - chPhaseStartDO[i]) * frac;
+                valvePIDs[i]->Compute();
             }
 
             doFloatPrev[i] = doVals[i];
