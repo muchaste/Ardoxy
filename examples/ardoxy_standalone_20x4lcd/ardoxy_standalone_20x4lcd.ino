@@ -1168,7 +1168,7 @@ void setup() {
     lcd.backlight();
 
     lcd.clear();
-    lcd.print(F("Ardoxy v2 <°))><"));
+    lcd.print(F("Ardoxy v2"));
 
     Wire.begin();
 
