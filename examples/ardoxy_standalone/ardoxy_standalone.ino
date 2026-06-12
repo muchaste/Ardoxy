@@ -164,6 +164,7 @@ char     filename[22];   // "YYYY_MM_DD_HH_MM.csv\0"
 uint32_t rowN      = 0;
 int      lastLogDay = 0;
 bool     sdReady   = false;
+bool     sdError   = false;
 
 // ─── LCD state ────────────────────────────────────────────────────────────────
 int           lcdPage           = 0;
@@ -279,11 +280,15 @@ void lcdUpdate() {
         lcd.print('/');
         if (now.day()    < 10) lcd.print('0'); lcd.print(now.day());
         lcd.setCursor(0, 1);
-        if (now.hour()   < 10) lcd.print('0'); lcd.print(now.hour());
-        lcd.print(':');
-        if (now.minute() < 10) lcd.print('0'); lcd.print(now.minute());
-        lcd.print(':');
-        if (now.second() < 10) lcd.print('0'); lcd.print(now.second());
+        if (sdError) {
+            lcd.print(F("SD card fail!   "));
+        } else {
+            if (now.hour()   < 10) lcd.print('0'); lcd.print(now.hour());
+            lcd.print(':');
+            if (now.minute() < 10) lcd.print('0'); lcd.print(now.minute());
+            lcd.print(':');
+            if (now.second() < 10) lcd.print('0'); lcd.print(now.second());
+        }
 
     } else {
         int i = lcdPage - 1;
@@ -343,11 +348,12 @@ void createLogfile() {
 //  SD: append one measurement row; rotate file at midnight
 // ═══════════════════════════════════════════════════════════════════════════════
 void writeToSD(double* doVals, double* tempVals) {
-    if (!sdReady) return;
+    if (!sdReady) { sdError = true; return; }
     DateTime now = RTC.now();
     if (now.day() != lastLogDay) createLogfile();  // daily rotation
     FsFile f = SD.open(filename, O_WRITE | O_AT_END);
-    if (!f) return;
+    if (!f) { sdError = true; return; }
+    sdError = false;
     uint32_t elapsedMs = (now.unixtime() - expStartUnix) * 1000UL;
     f.print(rowN);       f.print(';');
     f.print(elapsedMs);  f.print(';');
@@ -371,9 +377,10 @@ void writeToSD(double* doVals, double* tempVals) {
 //  SD: persist experiment state to STATE.TXT (called every measurement cycle)
 // ═══════════════════════════════════════════════════════════════════════════════
 void writeState() {
-    if (!sdReady) return;
+    if (!sdReady) { sdError = true; return; }
     FsFile stFile = SD.open("STATE.TXT", O_WRITE | O_CREAT | O_TRUNC);
-    if (!stFile) return;
+    if (!stFile) { sdError = true; return; }
+    sdError = false;
     stFile.print(F("EXP_START=")); stFile.println(expStartUnix);
     stFile.print(F("LOGFILE="));   stFile.println(filename);
     for (int i = 0; i < nChannels; i++) {
@@ -440,10 +447,11 @@ bool readState() {
 //  SD: save config to CONFIG.TXT
 // ═══════════════════════════════════════════════════════════════════════════════
 void saveConfig() {
-    if (!sdReady) { Serial.println(F("ACK:ERR:SD not ready")); return; }
+    if (!sdReady) { sdError = true; Serial.println(F("ACK:ERR:SD not ready")); return; }
     SD.remove("CONFIG.TXT");
     FsFile cfgFile = SD.open("CONFIG.TXT", O_WRITE | O_CREAT | O_TRUNC);
-    if (!cfgFile) { Serial.println(F("ACK:ERR:SD open fail")); return; }
+    if (!cfgFile) { sdError = true; Serial.println(F("ACK:ERR:SD open fail")); return; }
+    sdError = false;
 
     // ── shared hardware config ────────────────────────────────────────────────
     cfgFile.print(F("NCHANNELS="));  cfgFile.println(nChannels);
