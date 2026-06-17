@@ -103,7 +103,7 @@ enum ChMode : uint8_t { CH_MEASURE = 0, CH_SETPOINT = 1, CH_SEQUENCE = 2 };
 int    nChannels                 = 1;
 int    nSensors                  = 1;
 int    s1Channels                = 1;
-int    relayPins[MAX_CHANNELS]   = {46, 48, 50, 52, 22, 24, 26, 28};
+int    relayPins[MAX_CHANNELS]   = {23, 25, 27, 29, 31, 33, 35, 37};
 long   sampInterval              = 30000UL;
 float  Kp[MAX_CHANNELS]          = {10, 10, 10, 10, 10, 10, 10, 10};
 float  Ki[MAX_CHANNELS]          = { 1,  1,  1,  1,  1,  1,  1,  1};

@@ -774,7 +774,7 @@ def build_standalone_ui(root):
 
     # Channels on sensor 2
     lbl(inner, "Channels on sensor 2 (Serial 2):").grid(row=r, column=0, sticky="w", pady=3)
-    s2ch_var = tk.IntVar(value=4)
+    s2ch_var = tk.IntVar(value=1)
     s2ch_spin = ttk.Spinbox(inner, from_=1, to=4, textvariable=s2ch_var, width=4)
     s2ch_spin.grid(row=r, column=1, sticky="w", padx=4)
     lbl(inner, "(only when 2 sensors)", foreground="grey").grid(
@@ -796,7 +796,7 @@ def build_standalone_ui(root):
     kp_vars         = [tk.StringVar(value="10.0") for _ in range(8)]
     ki_vars         = [tk.StringVar(value="1.0")  for _ in range(8)]
     kd_vars         = [tk.StringVar(value="0.0")  for _ in range(8)]
-    _default_pins   = [46, 48, 50, 52, 22, 24, 26, 28]
+    _default_pins   = [23, 25, 27, 29, 31, 33, 35, 37]
     relay_vars      = [tk.StringVar(value=str(_default_pins[i])) for i in range(8)]
     _ch_row_widgets = []   # per-channel list of Entry widgets for enable/disable
     for i in range(8):
