@@ -122,6 +122,7 @@ uint32_t chCurrentPhaseEndUnix[MAX_CHANNELS];        // rolling end of current p
 bool     chDone[MAX_CHANNELS];                       // channel finished → passive MEASURE
 bool     chActive[MAX_CHANNELS];                     // false until chStart time arrives (WAITING)
 float    chPhaseStartDO[MAX_CHANNELS];               // DO at start of 'c' (change) phase
+byte     chFault[MAX_CHANNELS];                      // 0=OK  1=CAL error  2=PRB disconnected
 
 // ─── per-channel phase arrays (2-D: [channel][phase]) ─────────────────────────
 float    chPhaseSP[MAX_CHANNELS][MAX_PHASES];        // hold / change target DO
@@ -224,7 +225,9 @@ void emitData(uint32_t elapsedMs, double* doVals, double* tempVals) {
     // STATUS:CH:<ch>:<statusStr>:<phaseIdx>:<do>:<sp>
     for (int i = 0; i < nChannels; i++) {
         Serial.print(F("STATUS:CH:")); Serial.print(i); Serial.print(':');
-        if      (chDone[i])                    Serial.print(F("DONE"));
+        if      (chFault[i] == 2)              Serial.print(F("PRB"));
+        else if (chFault[i] == 1)              Serial.print(F("CAL"));
+        else if (chDone[i])                    Serial.print(F("DONE"));
         else if (chMode[i] == CH_MEASURE)      Serial.print(F("MEASURE"));
         else if (!chActive[i])                 Serial.print(F("WAITING-MEASURING"));
         else if (chMode[i] == CH_SETPOINT)     Serial.print(F("SETPOINT"));
@@ -295,8 +298,11 @@ void lcdUpdate() {
         // Line 0: tankID  DO%  status
         lcd.setCursor(0, 0);
         lcd.print(tankID[i]); lcd.print(' ');
-        lcd.print(lastDO[i], 2); lcd.print('%'); lcd.print(' ');
-        if      (chDone[i])                    lcd.print(F("DONE"));
+        if      (chFault[i] == 2) { lcd.print(F("PRB ")); }
+        else if (chFault[i] == 1) { lcd.print(F("CAL ")); }
+        else { lcd.print(lastDO[i], 2); lcd.print('%'); lcd.print(' '); }
+        if      (chFault[i] > 0)               lcd.print(F("ERR"));
+        else if (chDone[i])                    lcd.print(F("DONE"));
         else if (chMode[i] == CH_MEASURE)      lcd.print('M');
         else if (!chActive[i])                 lcd.print(F("WAIT"));
         else if (chMode[i] == CH_SETPOINT)     lcd.print(F("SP"));
@@ -304,7 +310,10 @@ void lcdUpdate() {
 
         // Line 1: setpoint info
         lcd.setCursor(0, 1);
-        if (chActive[i] && !chDone[i] && chMode[i] != CH_MEASURE) {
+        if (chFault[i] > 0) {
+            if (chFault[i] == 2) lcd.print(F("Probe error!    "));
+            else                  lcd.print(F("Cal error!      "));
+        } else if (chActive[i] && !chDone[i] && chMode[i] != CH_MEASURE) {
             if (chMode[i] == CH_SETPOINT) {
                 lcd.print(F("SP:")); lcd.print(chSetpoint[i], 2);
             } else if (chNPhases[i] > 0) {
@@ -752,12 +761,28 @@ void runAllChannels() {
     for (int i = 0; i < nChannels; i++) lastDO[i] = doVals[i];
     lastTemp = tempVals[0]; lastTemp2 = tempVals[1];
 
+    // 2a. Probe/calibration fault detection (auto-clears each cycle)
+    for (int i = 0; i < nChannels; i++) {
+        byte prevFault = chFault[i];
+        if      (doVals[i] < -20.0 || doVals[i] > 300.0) chFault[i] = 2;
+        else if (doVals[i] <  -5.0 || doVals[i] > 150.0) chFault[i] = 1;
+        else                                               chFault[i] = 0;
+        if (chFault[i] != prevFault && chFault[i] > 0) {
+            Serial.print(F("MSG:CH")); Serial.print(i);
+            if (chFault[i] == 2) Serial.println(F(":PRB"));
+            else                 Serial.println(F(":CAL"));
+        }
+    }
+
     // 2. Per-channel output computation
     uint32_t nowUnix = RTC.now().unixtime();
 
     for (int i = 0; i < nChannels; i++) {
         doInput[i]  = doVals[i];
         doOutput[i] = 0;   // default: valve closed
+
+        // Probe/cal fault: suppress control, keep measuring
+        if (chFault[i] > 0) continue;
 
         // Done or pure-measure: no control
         if (chDone[i] || chMode[i] == CH_MEASURE) continue;
