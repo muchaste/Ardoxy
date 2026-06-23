@@ -392,12 +392,12 @@ void writeState() {
     sdError = false;
     stFile.print(F("EXP_START=")); stFile.println(expStartUnix);
     stFile.print(F("LOGFILE="));   stFile.println(filename);
+    stFile.print(F("ROWN="));      stFile.println(rowN);
     for (int i = 0; i < nChannels; i++) {
         stFile.print(F("CH_")); stFile.print(i); stFile.print(F("_PIDX="));  stFile.println(chPhaseIdx[i]);
         stFile.print(F("CH_")); stFile.print(i); stFile.print(F("_DONE="));  stFile.println(chDone[i] ? 1 : 0);
         stFile.print(F("CH_")); stFile.print(i); stFile.print(F("_SPEND=")); stFile.println(chSetpointEndUnix[i]);
         stFile.print(F("CH_")); stFile.print(i); stFile.print(F("_PEND="));  stFile.println(chCurrentPhaseEndUnix[i]);
-        stFile.print(F("CH_")); stFile.print(i); stFile.print(F("_DOPREV="));stFile.println(doFloatPrev[i], 4);
     }
     stFile.close();
 }
@@ -410,6 +410,7 @@ void writeState() {
 static void parseStateLine(char* key, char* val) {
     if (strcmp(key, "EXP_START") == 0) { expStartUnix = strtoul(val, NULL, 10); return; }
     if (strcmp(key, "LOGFILE")   == 0) { strncpy(filename, val, 21); filename[21] = '\0'; return; }
+    if (strcmp(key, "ROWN")      == 0) { rowN = strtoul(val, NULL, 10); return; }
     if (strncmp(key, "CH_", 3)  != 0) return;
     char* p = key + 3;
     int ch = atoi(p);
@@ -420,7 +421,6 @@ static void parseStateLine(char* key, char* val) {
     else if (strcmp(p, "DONE" ) == 0) chDone[ch]                = (atoi(val) != 0);
     else if (strcmp(p, "SPEND") == 0) chSetpointEndUnix[ch]     = strtoul(val, NULL, 10);
     else if (strcmp(p, "PEND" ) == 0) chCurrentPhaseEndUnix[ch] = strtoul(val, NULL, 10);
-    else if (strcmp(p, "DOPREV")== 0) doFloatPrev[ch]           = atof(val);
 }
 
 bool readState() {
