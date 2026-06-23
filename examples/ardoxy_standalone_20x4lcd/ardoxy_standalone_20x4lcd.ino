@@ -89,7 +89,6 @@ Ardoxy              ardoxy(Serial1);          // FireSting 1 on Serial1 (MEGA pi
 Ardoxy              ardoxy2(Serial2);         // FireSting 2 on Serial2 (MEGA pins 16/17)
 RTC_PCF8523         RTC;
 SdFs                SD;
-FsFile              logFile;
 LiquidCrystal_I2C lcd(0x27,20,4);             // set the LCD address to 0x27, uncomment line below if no function
 //LiquidCrystal_I2C lcd(0x3F,20,4);
 
@@ -862,13 +861,13 @@ void runAllChannels() {
             if (chNPhases[i] == 0) { chDone[i] = true; continue; }
 
             // Phase advance
-            if (nowUnix >= chCurrentPhaseEndUnix[i]) {
+            while (!chDone[i] && nowUnix >= chCurrentPhaseEndUnix[i]) {
                 chPhaseIdx[i]++;
                 if (chPhaseIdx[i] >= chNPhases[i]) {
                     valvePIDs[i]->SetMode(MANUAL);
                     chDone[i] = true;
                     Serial.print(F("MSG:CH")); Serial.print(i); Serial.println(F(":DONE"));
-                    continue;
+                    break;
                 }
                 chCurrentPhaseEndUnix[i] += chPhaseDurSec[i][chPhaseIdx[i]];
                 char nt = chPhaseType[i][chPhaseIdx[i]];
@@ -878,6 +877,7 @@ void runAllChannels() {
                 Serial.print(F("MSG:CH")); Serial.print(i);
                 Serial.print(F(":phase ")); Serial.println(chPhaseIdx[i]);
             }
+            if (chDone[i]) continue;
 
             // Phase logic
             byte pi = chPhaseIdx[i];
@@ -958,7 +958,6 @@ void processCommand(char* buf) {
                 Ardoxy::closeRelays(nChannels, relayPins);
                 ardoxy.end();
                 if (nSensors == 2) ardoxy2.end();
-                logFile.close();
                 state = CONFIGURED;
             }
             Serial.println(F("ACK:OK"));
