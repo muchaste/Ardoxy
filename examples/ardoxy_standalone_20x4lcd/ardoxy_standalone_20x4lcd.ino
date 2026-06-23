@@ -78,11 +78,11 @@
 
 #define WHITE        0x7
 #define MAX_CHANNELS 8
-#define MAX_PHASES   6          // phases per channel (was 10 global in v1)
+#define MAX_PHASES   6              // phases per channel (was 10 global in v1)
 #define RECV_BUF     96
-#define CHIP_SELECT  10         // Adafruit datalogger shield
-#define LCD_PAGE_INTERVAL 4000UL  // ms between automatic LCD page changes
-#define LCD_REFRESH_MS      1000UL   // ms between LCD content redraws
+#define CHIP_SELECT  10             // Adafruit datalogger shield
+#define LCD_PAGE_INTERVAL 4000UL    // ms between automatic LCD page changes
+#define LCD_REFRESH_MS    4000UL    // ms between LCD content redraws
 
 // ─── hardware instances ───────────────────────────────────────────────────────
 Ardoxy              ardoxy(Serial1);          // FireSting 1 on Serial1 (MEGA pins 18/19)
