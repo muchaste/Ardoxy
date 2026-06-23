@@ -645,8 +645,13 @@ void startExperiment() {
             chCurrentPhaseEndUnix[i] = chStart[i] + chPhaseDurSec[i][0];
             if (immediate) {
                 char t = chPhaseType[i][0];
-                if (t == 'h' || t == 'd') {
+                if (t == 'h') {
                     holdSP[i] = chPhaseSP[i][0];
+                    valvePIDs[i]->SetMode(AUTOMATIC);
+                } else if (t == 'd') {
+                    DateTime _dt = RTC.now();
+                    float _hr = _dt.hour() + _dt.minute() / 60.0f + _dt.second() / 3600.0f;
+                    holdSP[i] = dailyCycleSP(chPhaseMinSP[i][0], chPhaseMaxSP[i][0], chPhasePeakHour[i][0], _hr);
                     valvePIDs[i]->SetMode(AUTOMATIC);
                 } else if (t == 'c') {
                     chPhaseStartDO[i] = 0.0f;  // sentinel: set from first measurement
@@ -698,8 +703,14 @@ void recoverExperiment() {
                 chDone[i] = true;
             } else {
                 char t = chPhaseType[i][chPhaseIdx[i]];
-                if      (t == 'h' || t == 'd') { holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC); }
-                else if (t == 'c')             { chPhaseStartDO[i] = 0.0f; valvePIDs[i]->SetMode(AUTOMATIC); }
+                if (t == 'h') {
+                    holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC);
+                } else if (t == 'd') {
+                    DateTime _dt = RTC.now();
+                    float _hr = _dt.hour() + _dt.minute() / 60.0f + _dt.second() / 3600.0f;
+                    holdSP[i] = dailyCycleSP(chPhaseMinSP[i][chPhaseIdx[i]], chPhaseMaxSP[i][chPhaseIdx[i]], chPhasePeakHour[i][chPhaseIdx[i]], _hr);
+                    valvePIDs[i]->SetMode(AUTOMATIC);
+                } else if (t == 'c') { chPhaseStartDO[i] = 0.0f; valvePIDs[i]->SetMode(AUTOMATIC); }
                 // 'p': both PIDs remain MANUAL
             }
         }
@@ -775,7 +786,8 @@ void runAllChannels() {
     }
 
     // 2. Per-channel output computation
-    uint32_t nowUnix = RTC.now().unixtime();
+    DateTime nowDT = RTC.now();
+    uint32_t nowUnix = nowDT.unixtime();
 
     for (int i = 0; i < nChannels; i++) {
         doInput[i]  = doVals[i];
@@ -799,8 +811,13 @@ void runAllChannels() {
                 valvePIDs[i]->SetMode(AUTOMATIC);
             } else if (chMode[i] == CH_SEQUENCE && chNPhases[i] > 0) {
                 char t = chPhaseType[i][chPhaseIdx[i]];
-                if      (t == 'h' || t == 'd') { holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC); }
-                else if (t == 'c')             { chPhaseStartDO[i] = doVals[i]; valvePIDs[i]->SetMode(AUTOMATIC); }
+                if (t == 'h') {
+                    holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC);
+                } else if (t == 'd') {
+                    float _hr = nowDT.hour() + nowDT.minute() / 60.0f + nowDT.second() / 3600.0f;
+                    holdSP[i] = dailyCycleSP(chPhaseMinSP[i][chPhaseIdx[i]], chPhaseMaxSP[i][chPhaseIdx[i]], chPhasePeakHour[i][chPhaseIdx[i]], _hr);
+                    valvePIDs[i]->SetMode(AUTOMATIC);
+                } else if (t == 'c') { chPhaseStartDO[i] = doVals[i]; valvePIDs[i]->SetMode(AUTOMATIC); }
                 // 'p': all PIDs remain MANUAL
             }
             Serial.print(F("MSG:CH")); Serial.print(i); Serial.println(F(" started"));
@@ -832,9 +849,14 @@ void runAllChannels() {
                 }
                 chCurrentPhaseEndUnix[i] += chPhaseDurSec[i][chPhaseIdx[i]];
                 char nt = chPhaseType[i][chPhaseIdx[i]];
-                if      (nt == 'h' || nt == 'd') { holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC); }
-                else if (nt == 'c')              { chPhaseStartDO[i] = doVals[i]; valvePIDs[i]->SetMode(AUTOMATIC); }
-                else                             { valvePIDs[i]->SetMode(MANUAL); }  // 'p'
+                if (nt == 'h') {
+                    holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC);
+                } else if (nt == 'd') {
+                    float _hr = nowDT.hour() + nowDT.minute() / 60.0f + nowDT.second() / 3600.0f;
+                    holdSP[i] = dailyCycleSP(chPhaseMinSP[i][chPhaseIdx[i]], chPhaseMaxSP[i][chPhaseIdx[i]], chPhasePeakHour[i][chPhaseIdx[i]], _hr);
+                    valvePIDs[i]->SetMode(AUTOMATIC);
+                } else if (nt == 'c') { chPhaseStartDO[i] = doVals[i]; valvePIDs[i]->SetMode(AUTOMATIC); }
+                else                  { valvePIDs[i]->SetMode(MANUAL); }  // 'p'
                 Serial.print(F("MSG:CH")); Serial.print(i);
                 Serial.print(F(":phase ")); Serial.println(chPhaseIdx[i]);
             }
@@ -852,8 +874,7 @@ void runAllChannels() {
                 valvePIDs[i]->Compute();
 
             } else if (pt == 'd') {
-                DateTime now2 = RTC.now();
-                float hr = now2.hour() + now2.minute() / 60.0f + now2.second() / 3600.0f;
+                float hr = nowDT.hour() + nowDT.minute() / 60.0f + nowDT.second() / 3600.0f;
                 holdSP[i] = dailyCycleSP(chPhaseMinSP[i][pi], chPhaseMaxSP[i][pi],
                                          chPhasePeakHour[i][pi], hr);
                 valvePIDs[i]->Compute();
@@ -878,7 +899,7 @@ void runAllChannels() {
                            sampInterval - ((long)nChannels * 40 + 500));
 
     // 4. Emit, log, persist, display
-    uint32_t elapsedSec = RTC.now().unixtime() - expStartUnix;
+    uint32_t elapsedSec = nowDT.unixtime() - expStartUnix;
     emitData(elapsedSec, doVals, tempVals);
     writeToSD(doVals, tempVals);
     writeState();
@@ -1067,6 +1088,9 @@ void processCommand(char* buf) {
                     chPhaseMinSP[ch][idx]    = atof(minStr);
                     chPhaseMaxSP[ch][idx]    = atof(maxStr);
                     chPhasePeakHour[ch][idx] = atof(peakStr);
+                    if (chPhaseMinSP[ch][idx] >= chPhaseMaxSP[ch][idx]) {
+                        Serial.println(F("ACK:ERR:CH:PHASE daily minSP>=maxSP")); return;
+                    }
                 }
 
             } else {
