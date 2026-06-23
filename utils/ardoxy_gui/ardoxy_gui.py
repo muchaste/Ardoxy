@@ -1143,6 +1143,16 @@ def build_standalone_ui(root):
                     maxsp = v[6] if v[6] else "0"
                     peak  = v[7] if v[7] else "0"
                     if ptype == "d":
+                        if not v[6] or not v[7]:
+                            messagebox.showerror("Invalid config",
+                                f"CH{i+1} phase {idx+1}: daily cycle requires maxSP and peakHour.")
+                            cfg_status_var.set("Config FAILED \u2717")
+                            return
+                        if float(sp) >= float(maxsp):
+                            messagebox.showerror("Invalid config",
+                                f"CH{i+1} phase {idx+1}: daily cycle minSP ({sp}) must be < maxSP ({maxsp}).")
+                            cfg_status_var.set("Config FAILED \u2717")
+                            return
                         ok = ok and ack(
                             f"CFG:CH:{i}:PHASE:{idx}:{sp}:{d_v}:{h_v}:{mi_v}"
                             f":d:{sp}:{maxsp}:{peak}")
@@ -1207,6 +1217,16 @@ def build_standalone_ui(root):
                     maxsp = v[6] if v[6] else "0"
                     peak  = v[7] if v[7] else "0"
                     if ptype == "d":
+                        if not v[6] or not v[7]:
+                            messagebox.showerror("Invalid config",
+                                f"CH{i+1} phase {j+1}: daily cycle requires maxSP and peakHour.")
+                            cfg_status_var.set("Export FAILED \u2717")
+                            return
+                        if float(sp) >= float(maxsp):
+                            messagebox.showerror("Invalid config",
+                                f"CH{i+1} phase {j+1}: daily cycle minSP ({sp}) must be < maxSP ({maxsp}).")
+                            cfg_status_var.set("Export FAILED \u2717")
+                            return
                         lines.append(
                             f"CH_{i}_PHASE_{j}={sp},{dur_sec},{ptype},{sp},{maxsp},{peak}")
                     else:
