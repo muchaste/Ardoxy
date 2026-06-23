@@ -284,7 +284,7 @@ void lcdUpdate() {
 
     lcd.clear();
 
-    // ── Line 0: YY/MM/DD HH:MM <5-char field> ────────────────────────────────
+    // ── Row 0: YY/MM/DD HH:MM <5-char field> ─────────────────────────────────
     DateTime now = RTC.now();
     lcd.setCursor(0, 0);
     int yr2 = now.year() % 100;
@@ -305,35 +305,26 @@ void lcdUpdate() {
         lcd.print(t, 1); lcd.print('C');
     }
 
-    // ── Error details on line 1 ───────────────────────────────────────────────
+    // ── Error details on row 1 ────────────────────────────────────────────────
     if (errorCount > 0) {
         lcd.setCursor(0, 1);
         lcd.print(F("Sensor err ")); lcd.print(errorCount); lcd.print('/'); lcd.print(5);
         return;
     }
 
-    // ── Lines 1-3: up to 3 channels for the current page ─────────────────────
-    int firstCh = lcdPage * 3;
-    for (int row = 0; row < 3; row++) {
+    // ── Rows 1-2: two channels per page ──────────────────────────────────────
+    int firstCh = lcdPage * 2;
+    for (int row = 0; row < 2; row++) {
         int ch = firstCh + row;
         lcd.setCursor(0, row + 1);
-        if (ch >= nChannels) {
-            // Spare slot on last page: show sensor 2 temperature in 2-sensor mode
-            if (nSensors == 2 && ch == nChannels) {
-                double t2 = lastTemp2;
-                lcd.print(F("Temp2: "));
-                if (t2 >= 0.0 && t2 < 10.0) lcd.print(' ');
-                lcd.print(t2, 1); lcd.print('C');
-            }
-            continue;
-        }
+        if (ch >= nChannels) continue;
 
         // Tank ID — 6 chars, left-justified, space-padded
         int idLen = strlen(tankID[ch]);
         for (int s = 0; s < 6; s++) lcd.print(s < idLen ? (char)tankID[ch][s] : ' ');
         lcd.print(' ');
 
-        // DO value — 6 chars: [  ]XX.X%  or fault label
+        // DO value — 6 chars
         if      (chFault[ch] == 2) { lcd.print(F("  PRB ")); }
         else if (chFault[ch] == 1) { lcd.print(F("  CAL ")); }
         else {
@@ -363,6 +354,20 @@ void lcdUpdate() {
             else if (pt == 'c') { lcd.print(F("c>")); printLcdSP(chPhaseSP[ch][pi]); }
             else if (pt == 'd') { lcd.print(F("d ")); printLcdSP((float)holdSP[ch]); }
         }
+    }
+
+    // ── Row 3: temperature of the sensor for this page ────────────────────────
+    lcd.setCursor(0, 3);
+    if (nSensors == 2 && firstCh >= s1Channels) {
+        lcd.print(F("T2: "));
+        double t2 = lastTemp2;
+        if (t2 >= 0.0 && t2 < 10.0) lcd.print(' ');
+        lcd.print(t2, 1); lcd.print('C');
+    } else {
+        lcd.print(F("T1: "));
+        double t1 = lastTemp;
+        if (t1 >= 0.0 && t1 < 10.0) lcd.print(' ');
+        lcd.print(t1, 1); lcd.print('C');
     }
 }
 
@@ -639,7 +644,7 @@ void initHardware() {
     for (int i = 0; i < nChannels; i++) {
         Ardoxy::configurePID(*valvePIDs[i], Kp[i], Ki[i], Kd[i], sampInterval, windowSize);
     }
-    lcdNumPages       = (nChannels + 2) / 3;  // 1-3ch→1 page, 4-6→2, 7-8→3
+    lcdNumPages       = (nChannels + 1) / 2;  // 1-2ch→1 page, 3-4→2, 5-6→3, 7-8→4
     lcdPage           = 0;
     lcdLastPageChange = 0;
     lcdLastRefresh    = 0;
@@ -685,8 +690,13 @@ void startExperiment() {
             chCurrentPhaseEndUnix[i] = chStart[i] + chPhaseDurSec[i][0];
             if (immediate) {
                 char t = chPhaseType[i][0];
-                if (t == 'h' || t == 'd') {
+                if (t == 'h') {
                     holdSP[i] = chPhaseSP[i][0];
+                    valvePIDs[i]->SetMode(AUTOMATIC);
+                } else if (t == 'd') {
+                    DateTime _dt = RTC.now();
+                    float _hr = _dt.hour() + _dt.minute() / 60.0f + _dt.second() / 3600.0f;
+                    holdSP[i] = dailyCycleSP(chPhaseMinSP[i][0], chPhaseMaxSP[i][0], chPhasePeakHour[i][0], _hr);
                     valvePIDs[i]->SetMode(AUTOMATIC);
                 } else if (t == 'c') {
                     chPhaseStartDO[i] = 0.0f;  // sentinel: set from first measurement
@@ -738,8 +748,14 @@ void recoverExperiment() {
                 chDone[i] = true;
             } else {
                 char t = chPhaseType[i][chPhaseIdx[i]];
-                if      (t == 'h' || t == 'd') { holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC); }
-                else if (t == 'c')             { chPhaseStartDO[i] = 0.0f; valvePIDs[i]->SetMode(AUTOMATIC); }
+                if (t == 'h') {
+                    holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC);
+                } else if (t == 'd') {
+                    DateTime _dt = RTC.now();
+                    float _hr = _dt.hour() + _dt.minute() / 60.0f + _dt.second() / 3600.0f;
+                    holdSP[i] = dailyCycleSP(chPhaseMinSP[i][chPhaseIdx[i]], chPhaseMaxSP[i][chPhaseIdx[i]], chPhasePeakHour[i][chPhaseIdx[i]], _hr);
+                    valvePIDs[i]->SetMode(AUTOMATIC);
+                } else if (t == 'c') { chPhaseStartDO[i] = 0.0f; valvePIDs[i]->SetMode(AUTOMATIC); }
                 // 'p': both PIDs remain MANUAL
             }
         }
@@ -815,7 +831,8 @@ void runAllChannels() {
     }
 
     // 2. Per-channel output computation
-    uint32_t nowUnix = RTC.now().unixtime();
+    DateTime nowDT = RTC.now();
+    uint32_t nowUnix = nowDT.unixtime();
 
     for (int i = 0; i < nChannels; i++) {
         doInput[i]  = doVals[i];
@@ -839,8 +856,13 @@ void runAllChannels() {
                 valvePIDs[i]->SetMode(AUTOMATIC);
             } else if (chMode[i] == CH_SEQUENCE && chNPhases[i] > 0) {
                 char t = chPhaseType[i][chPhaseIdx[i]];
-                if      (t == 'h' || t == 'd') { holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC); }
-                else if (t == 'c')             { chPhaseStartDO[i] = doVals[i]; valvePIDs[i]->SetMode(AUTOMATIC); }
+                if (t == 'h') {
+                    holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC);
+                } else if (t == 'd') {
+                    float _hr = nowDT.hour() + nowDT.minute() / 60.0f + nowDT.second() / 3600.0f;
+                    holdSP[i] = dailyCycleSP(chPhaseMinSP[i][chPhaseIdx[i]], chPhaseMaxSP[i][chPhaseIdx[i]], chPhasePeakHour[i][chPhaseIdx[i]], _hr);
+                    valvePIDs[i]->SetMode(AUTOMATIC);
+                } else if (t == 'c') { chPhaseStartDO[i] = doVals[i]; valvePIDs[i]->SetMode(AUTOMATIC); }
                 // 'p': all PIDs remain MANUAL
             }
             Serial.print(F("MSG:CH")); Serial.print(i); Serial.println(F(" started"));
@@ -872,9 +894,14 @@ void runAllChannels() {
                 }
                 chCurrentPhaseEndUnix[i] += chPhaseDurSec[i][chPhaseIdx[i]];
                 char nt = chPhaseType[i][chPhaseIdx[i]];
-                if      (nt == 'h' || nt == 'd') { holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC); }
-                else if (nt == 'c')              { chPhaseStartDO[i] = doVals[i]; valvePIDs[i]->SetMode(AUTOMATIC); }
-                else                             { valvePIDs[i]->SetMode(MANUAL); }  // 'p'
+                if (nt == 'h') {
+                    holdSP[i] = chPhaseSP[i][chPhaseIdx[i]]; valvePIDs[i]->SetMode(AUTOMATIC);
+                } else if (nt == 'd') {
+                    float _hr = nowDT.hour() + nowDT.minute() / 60.0f + nowDT.second() / 3600.0f;
+                    holdSP[i] = dailyCycleSP(chPhaseMinSP[i][chPhaseIdx[i]], chPhaseMaxSP[i][chPhaseIdx[i]], chPhasePeakHour[i][chPhaseIdx[i]], _hr);
+                    valvePIDs[i]->SetMode(AUTOMATIC);
+                } else if (nt == 'c') { chPhaseStartDO[i] = doVals[i]; valvePIDs[i]->SetMode(AUTOMATIC); }
+                else                  { valvePIDs[i]->SetMode(MANUAL); }  // 'p'
                 Serial.print(F("MSG:CH")); Serial.print(i);
                 Serial.print(F(":phase ")); Serial.println(chPhaseIdx[i]);
             }
@@ -892,8 +919,7 @@ void runAllChannels() {
                 valvePIDs[i]->Compute();
 
             } else if (pt == 'd') {
-                DateTime now2 = RTC.now();
-                float hr = now2.hour() + now2.minute() / 60.0f + now2.second() / 3600.0f;
+                float hr = nowDT.hour() + nowDT.minute() / 60.0f + nowDT.second() / 3600.0f;
                 holdSP[i] = dailyCycleSP(chPhaseMinSP[i][pi], chPhaseMaxSP[i][pi],
                                          chPhasePeakHour[i][pi], hr);
                 valvePIDs[i]->Compute();
@@ -918,7 +944,7 @@ void runAllChannels() {
                            sampInterval - ((long)nChannels * 40 + 500));
 
     // 4. Emit, log, persist, display
-    uint32_t elapsedSec = RTC.now().unixtime() - expStartUnix;
+    uint32_t elapsedSec = nowDT.unixtime() - expStartUnix;
     emitData(elapsedSec, doVals, tempVals);
     writeToSD(doVals, tempVals);
     writeState();
@@ -1107,6 +1133,9 @@ void processCommand(char* buf) {
                     chPhaseMinSP[ch][idx]    = atof(minStr);
                     chPhaseMaxSP[ch][idx]    = atof(maxStr);
                     chPhasePeakHour[ch][idx] = atof(peakStr);
+                    if (chPhaseMinSP[ch][idx] >= chPhaseMaxSP[ch][idx]) {
+                        Serial.println(F("ACK:ERR:CH:PHASE daily minSP>=maxSP")); return;
+                    }
                 }
 
             } else {
