@@ -497,6 +497,7 @@ bool readState() {
 void saveConfig() {
     if (!sdReady) { sdError = true; Serial.println(F("ACK:ERR:SD not ready")); return; }
     SD.remove("CONFIG.TXT");
+    SD.remove("STATE.TXT"); // remove old state - new config means that the old state is invalid
     FsFile cfgFile = SD.open("CONFIG.TXT", O_WRITE | O_CREAT | O_TRUNC);
     if (!cfgFile) { sdError = true; Serial.println(F("ACK:ERR:SD open fail")); return; }
     sdError = false;
