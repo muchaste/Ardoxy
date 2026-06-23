@@ -50,7 +50,7 @@
       STATUS:<IDLE|CONFIGURED|RUNNING|PAUSED>
       STATUS:CH:<ch>:<statusStr>:<phaseIdx>:<do>:<sp>
         statusStr: MEASURE | SETPOINT | SEQUENCE | WAITING-MEASURING | DONE
-      DATA:<elapsed_ms>,<do_ch0[,do_ch1...]>,<temp1>[,<temp2>],<out_ms_ch0[,...]>
+      DATA:<elapsed_s>,<do_ch0[,do_ch1...]>,<temp1>[,<temp2>],<out_ms_ch0[,...]>
       MSG:<text>
       DONE
 
@@ -75,6 +75,7 @@
 #include "RTClib.h"
 #include <Adafruit_RGBLCDShield.h>
 #include <utility/Adafruit_MCP23017.h>
+#include <avr/wdt.h>
 
 #define WHITE        0x7
 #define MAX_CHANNELS 8
@@ -178,7 +179,6 @@ double lastDO[MAX_CHANNELS] = {0};
 
 // ─── error handling ───────────────────────────────────────────────────────────
 int  errorCount = 0;
-void (*resetFunc)(void) = 0;   // software reboot to address 0
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -212,10 +212,10 @@ bool measureAllChannels(double* doVals, double* tempVals) {
 // ═══════════════════════════════════════════════════════════════════════════════
 //  Serial data emission: DATA line + per-channel STATUS lines
 // ═══════════════════════════════════════════════════════════════════════════════
-void emitData(uint32_t elapsedMs, double* doVals, double* tempVals) {
-    // DATA:<elapsed_ms>,<do0,...>,<temp1>[,<temp2>],<out_ms0,...>
+void emitData(uint32_t elapsedSec, double* doVals, double* tempVals) {
+    // DATA:<elapsed_s>,<do0,...>,<temp1>[,<temp2>],<out_ms0,...>
     Serial.print(F("DATA:"));
-    Serial.print(elapsedMs);
+    Serial.print(elapsedSec);
     for (int i = 0; i < nChannels; i++) { Serial.print(','); Serial.print(doVals[i], 2); }
     Serial.print(','); Serial.print(tempVals[0], 2);
     if (nSensors == 2) { Serial.print(','); Serial.print(tempVals[1], 2); }
@@ -340,7 +340,7 @@ void createLogfile() {
     if (!SD.exists(filename)) {
         FsFile f = SD.open(filename, O_WRITE | O_CREAT | O_AT_END);
         if (f) {
-            f.print(F("ROW;ELAPSED_MS;DATE;TIME"));
+            f.print(F("ROW;ELAPSED_S;DATE;TIME"));
             for (int i = 0; i < nChannels; i++) { f.print(';'); f.print(F("DO_")); f.print(tankID[i]); }
             f.print(F(";TEMP1"));
             if (nSensors == 2) f.print(F(";TEMP2"));
@@ -363,9 +363,9 @@ void writeToSD(double* doVals, double* tempVals) {
     FsFile f = SD.open(filename, O_WRITE | O_AT_END);
     if (!f) { sdError = true; return; }
     sdError = false;
-    uint32_t elapsedMs = (now.unixtime() - expStartUnix) * 1000UL;
+    uint32_t elapsedSec = now.unixtime() - expStartUnix;
     f.print(rowN);       f.print(';');
-    f.print(elapsedMs);  f.print(';');
+    f.print(elapsedSec); f.print(';');
     f.print(now.year()); f.print('/');
     f.print(now.month()); f.print('/');
     f.print(now.day());  f.print(';');
@@ -609,7 +609,7 @@ void initHardware() {
         Serial.println(F("MSG:Sensor connection failed — resetting in 5s"));
         lcd.clear(); lcd.print(F("Sensor FAILED")); lcd.setCursor(0, 1); lcd.print(F("Resetting..."));
         delay(5000);
-        resetFunc();
+        wdt_enable(WDTO_15MS); while(1);
     }
 }
 
@@ -745,7 +745,7 @@ void runAllChannels() {
             lcd.clear(); lcd.print(F("Sensor errors")); lcd.setCursor(0, 1); lcd.print(F("Resetting..."));
             Ardoxy::closeRelays(nChannels, relayPins);
             delay(3000);
-            resetFunc();
+            wdt_enable(WDTO_15MS); while(1);
         }
         Ardoxy::closeRelays(nChannels, relayPins);
         lcdLastRefresh = 0;   // force immediate LCD redraw on first poll
@@ -877,8 +877,8 @@ void runAllChannels() {
                            sampInterval - ((long)nChannels * 40 + 500));
 
     // 4. Emit, log, persist, display
-    uint32_t elapsedMs = (RTC.now().unixtime() - expStartUnix) * 1000UL;
-    emitData(elapsedMs, doVals, tempVals);
+    uint32_t elapsedSec = RTC.now().unixtime() - expStartUnix;
+    emitData(elapsedSec, doVals, tempVals);
     writeToSD(doVals, tempVals);
     writeState();
     lcdUpdate();
