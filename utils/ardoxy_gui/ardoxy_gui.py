@@ -863,8 +863,9 @@ def build_standalone_ui(root):
             relay_test_btns[_ch].configure(text=_test_btn_text(_ch), foreground="black")
 
     for _i in range(8):
-        _b = ttk.Button(relay_test_frame, text=_test_btn_text(_i),
-                        command=lambda ch=_i: _test_relay_toggle(ch), width=16)
+        _b = tk.Button(relay_test_frame, text=_test_btn_text(_i),
+                       command=lambda ch=_i: _test_relay_toggle(ch), width=16,
+                       relief="raised", padx=4, pady=4)
         _b.grid(row=_i // 4, column=_i % 4, padx=4, pady=4)
         relay_test_btns.append(_b)
 
