@@ -42,6 +42,7 @@
       CMD:RESUME
       CMD:STATUS
       CMD:SAVECONFIG                 write current config to CONFIG.TXT on SD
+      CMD:TESTPIN:<pin>:<0|1>        open (1) or close (0) relay by pin nr; blocked while RUNNING
       CMD:SETRTC:<Y>:<M>:<D>:<h>:<m>:<s>
 
     Arduino -> PC:
@@ -1030,6 +1031,19 @@ void processCommand(char* buf) {
 
         if (strcmp_P(key, PSTR("SAVECONFIG")) == 0) {
             saveConfig();
+            return;
+        }
+
+        if (strcmp_P(key, PSTR("TESTPIN")) == 0) {
+            if (state == RUNNING) { Serial.println(F("ACK:ERR:Running")); return; }
+            char* pinStr = strtok(NULL, ":");
+            char* valStr = strtok(NULL, ":");
+            if (!pinStr || !valStr) { Serial.println(F("ACK:ERR:TESTPIN fmt")); return; }
+            int pin = atoi(pinStr);
+            if (pin < 2 || pin > 53)  { Serial.println(F("ACK:ERR:TESTPIN pin")); return; }
+            pinMode(pin, OUTPUT);
+            digitalWrite(pin, atoi(valStr) ? LOW : HIGH);  // LOW=open (valve on), HIGH=closed
+            Serial.println(F("ACK:OK"));
             return;
         }
 

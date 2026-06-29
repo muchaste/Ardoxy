@@ -689,6 +689,8 @@ def handle_line(line: str):
                                                 command=connect_tab_ref._do_connect)
         if configure_tab_ref:
             configure_tab_ref._send_btn.configure(state="disabled")
+            if hasattr(configure_tab_ref, "_test_relay_reset"):
+                configure_tab_ref._test_relay_reset()
         if run_tab_ref:
             run_tab_ref._set_state_stopped("Connection lost")
 
@@ -822,6 +824,57 @@ def build_standalone_ui(root):
     ttk.Label(timing_frame, text="Interval (ms):").grid(row=0, column=0, sticky="w")
     ttk.Entry(timing_frame, textvariable=interval_var, width=10).grid(
         row=0, column=1, padx=4)
+    r += 1
+
+    # ── Relay Test ────────────────────────────────────────────────────────────
+    relay_test_frame = ttk.LabelFrame(inner, text="Relay Test  (wiring verification)", padding=6)
+    relay_test_frame.grid(row=r, column=0, columnspan=6, sticky="ew", pady=4)
+
+    relay_test_state = [False] * 8   # False=closed, True=open
+    relay_test_btns  = []
+
+    def _test_btn_text(ch):
+        s = "OPEN" if relay_test_state[ch] else "CLOSED"
+        return f"{tank_vars[ch].get()}  pin {relay_vars[ch].get()}\n{s}"
+
+    def _test_relay_toggle(ch):
+        if not connected or not ser:
+            messagebox.showerror("Error", "Not connected.")
+            return
+        new_st = not relay_test_state[ch]
+        relay_test_state[ch] = new_st
+        send(f"CMD:TESTPIN:{relay_vars[ch].get()}:{1 if new_st else 0}")
+        relay_test_btns[ch].configure(
+            text=_test_btn_text(ch),
+            foreground="red" if new_st else "black")
+
+    def _test_relay_all_off():
+        for _ch in range(8):
+            if relay_test_state[_ch] and connected and ser:
+                send(f"CMD:TESTPIN:{relay_vars[_ch].get()}:0")
+            relay_test_state[_ch] = False
+        for _ch in range(8):
+            relay_test_btns[_ch].configure(text=_test_btn_text(_ch), foreground="black")
+
+    def _test_relay_reset():
+        for _ch in range(8):
+            relay_test_state[_ch] = False
+        for _ch in range(8):
+            relay_test_btns[_ch].configure(text=_test_btn_text(_ch), foreground="black")
+
+    for _i in range(8):
+        _b = ttk.Button(relay_test_frame, text=_test_btn_text(_i),
+                        command=lambda ch=_i: _test_relay_toggle(ch), width=16)
+        _b.grid(row=_i // 4, column=_i % 4, padx=4, pady=4)
+        relay_test_btns.append(_b)
+
+    ttk.Button(relay_test_frame, text="All Closed",
+               command=_test_relay_all_off).grid(
+        row=2, column=0, columnspan=2, padx=4, pady=(2, 6), sticky="w")
+    ttk.Label(relay_test_frame,
+              text="Relays return to CLOSED on Arduino reset or power cycle.",
+              foreground="grey", font=("", 8)).grid(
+        row=2, column=2, columnspan=2, sticky="w", padx=4)
     r += 1
 
     # ── Per-channel mode & setpoint configuration ─────────────────────────────
@@ -1047,6 +1100,7 @@ def build_standalone_ui(root):
                 _w.configure(state=_s)
         for _ii in range(8):
             ch_nb.tab(_ii, state="normal" if _ii < nch else "disabled")
+            relay_test_btns[_ii].configure(state="normal" if _ii < nch else "disabled")
         try:
             if int(ch_nb.index(ch_nb.select())) >= nch:
                 ch_nb.select(nch - 1)
@@ -1350,6 +1404,7 @@ def build_standalone_ui(root):
 
     send_btn.configure(command=_validate_and_send)
     cfg_outer._send_btn = send_btn
+    cfg_outer._test_relay_reset = _test_relay_reset
     configure_tab_ref = cfg_outer
 
     # ── Tab 3: Run & Monitor ──────────────────────────────────────────────────
