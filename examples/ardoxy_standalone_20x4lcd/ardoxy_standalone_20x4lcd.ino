@@ -806,12 +806,15 @@ void runAllChannels() {
         }
         Ardoxy::closeRelays(nChannels, relayPins);
         lcdLastRefresh = 0;   // force immediate LCD redraw on first poll
+        wdt_enable(WDTO_8S);
         long rem = sampInterval - (long)(millis() - loopStart);
         while (rem > 0) {
+            wdt_reset();
             delay(rem > 500L ? 500L : rem);
             lcdUpdate();
             rem = sampInterval - (long)(millis() - loopStart);
         }
+        wdt_disable();
         return;
     }
     errorCount = 0;
@@ -941,10 +944,14 @@ void runAllChannels() {
     }
 
     // 3. Schedule relays (parallel-open, sequential-close by duration)
-    Ardoxy::scheduleRelays(nChannels, doOutput, relayPins,
-                           sampInterval - ((long)nChannels * 40 + 500));
+    {
+        long _window = sampInterval - ((long)nChannels * 40 + 500);
+        Ardoxy::scheduleRelays(nChannels, doOutput, relayPins,
+                               _window > 0L ? (unsigned long)_window : 0UL);
+    }
 
     // 4. Emit, log, persist, display
+    wdt_enable(WDTO_8S);
     uint32_t elapsedSec = nowDT.unixtime() - expStartUnix;
     emitData(elapsedSec, doVals, tempVals);
     writeToSD(doVals, tempVals);
@@ -953,10 +960,12 @@ void runAllChannels() {
 
     long rem = sampInterval - (long)(millis() - loopStart);
     while (rem > 0) {
+        wdt_reset();
         delay(rem > 500L ? 500L : rem);
         lcdUpdate();
         rem = sampInterval - (long)(millis() - loopStart);
     }
+    wdt_disable();
 }
 
 
@@ -1236,6 +1245,7 @@ void readSerial() {
 //  setup
 // ═══════════════════════════════════════════════════════════════════════════════
 void setup() {
+    wdt_disable();                      // clear any WDT the bootloader left armed
     Serial.begin(19200);
     Serial.println(F("MSG:ArdoxyStandalone v2 ready"));
 
@@ -1246,6 +1256,7 @@ void setup() {
     lcd.print(F("Ardoxy v2"));
 
     Wire.begin();
+    Wire.setWireTimeout(50000, true);   // 50ms I2C timeout; auto-resets bus on lockup
 
     // RTC
     lcd.setCursor(0, 1); lcd.print(F("Init RTC..."));
