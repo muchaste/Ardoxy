@@ -89,6 +89,7 @@ bool Ardoxy::waitForResponse(unsigned long timeoutMs)
 
 int Ardoxy::sendCommandForEcho(const char* command)
 {
+  ndx = 0;
   setActiveStream();
   clearSerialBuffer();
   
@@ -125,6 +126,7 @@ int Ardoxy::sendCommandForEcho(const char* command)
 
 long Ardoxy::sendCommandForValue(const char* command)
 {
+  ndx = 0;
   setActiveStream();
   clearSerialBuffer();
   
