@@ -1098,7 +1098,7 @@ void processCommand(char* buf) {
                 int len = strlen(fname);
                 if (!f.isDir() && len > 4 && strcmp(fname + len - 4, ".csv") == 0) {
                     Serial.print(F("FILE:")); Serial.print(fname);
-                    Serial.print(':');         Serial.println(f.fileSize());
+                    Serial.print(':');         Serial.println((uint32_t)f.fileSize());
                 }
                 f.close();
             }
@@ -1118,7 +1118,7 @@ void processCommand(char* buf) {
             FsFile f = SD.open(fname, O_READ);
             if (!f) { Serial.println(F("ACK:ERR:SENDFILE notfound")); return; }
             Serial.print(F("FILESTART:")); Serial.print(fname);
-            Serial.print(':');             Serial.println(f.fileSize());
+            Serial.print(':');             Serial.println((uint32_t)f.fileSize());
             uint32_t lineCount = 0;
             bool lineStart = true;
             while (f.available()) {
