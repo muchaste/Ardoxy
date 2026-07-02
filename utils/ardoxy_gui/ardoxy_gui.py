@@ -20,7 +20,9 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 # ── global state ───────────────────────────────────────────────────────────────
 ser = None
 serial_thread = None
-msg_queue = queue.Queue()
+msg_queue     = queue.Queue()
+_dl_msg_queue = queue.Queue()   # dedicated queue for file listing / download
+_dl_routing   = False           # when True, route file-transfer lines to _dl_msg_queue
 data_rows = []          # list of dicts
 running = False
 paused = False
@@ -640,6 +642,10 @@ run_tab_ref = None
 
 def handle_line(line: str):
     """Process one line from the Arduino; called from poll_queue and send_and_ack."""
+    global _dl_routing
+    if _dl_routing and line.startswith(("FLINE:", "FILESTART:", "FILEEND:", "FILE:", "FILES_DONE")):
+        _dl_msg_queue.put_nowait(line)
+        return
     if line.startswith("DATA:"):
         if run_tab_ref:
             d = run_tab_ref._parse_data_line(line)
@@ -1137,6 +1143,8 @@ def build_standalone_ui(root):
                command=lambda: _export_config()).pack(side="left", padx=4)
     ttk.Button(action_row, text="Import Config…",
                command=lambda: _import_config()).pack(side="left", padx=4)
+    ttk.Button(action_row, text="Read from Arduino…",
+               command=_import_from_arduino).pack(side="left", padx=4)
     ttk.Label(action_row, textvariable=cfg_status_var,
               foreground="blue").pack(side="left", padx=4)
     r += 1
@@ -1298,6 +1306,70 @@ def build_standalone_ui(root):
             f.write("\n".join(lines) + "\n")
         cfg_status_var.set("Config exported ✓")
 
+    def _apply_config_dict(cfg):
+        """Apply a key=value config dict to all GUI variables. Shared by all import sources."""
+        _mode_str = {"0": "MEASURE", "1": "SETPOINT", "2": "SEQUENCE"}
+        ns  = int(cfg.get("NSENSORS", "1"))
+        nch = int(cfg.get("NCHANNELS", "1"))
+        nsensors_var.set(ns)
+        if ns == 2:
+            s1ch = int(cfg.get("S1CHANNELS", str(nch)))
+            s2ch = nch - s1ch
+            s1ch_var.set(s1ch)
+            s2ch_var.set(max(1, s2ch))
+        else:
+            s1ch_var.set(nch)
+        if "INTERVAL" in cfg:
+            interval_var.set(cfg["INTERVAL"])
+        for i in range(nch):
+            if f"RELAY_{i}" in cfg: relay_vars[i].set(cfg[f"RELAY_{i}"])
+            if f"TANKID_{i}" in cfg: tank_vars[i].set(cfg[f"TANKID_{i}"])
+            if f"KP_{i}" in cfg: kp_vars[i].set(cfg[f"KP_{i}"])
+            if f"KI_{i}" in cfg: ki_vars[i].set(cfg[f"KI_{i}"])
+            if f"KD_{i}" in cfg: kd_vars[i].set(cfg[f"KD_{i}"])
+        for i in range(nch):
+            m_str = _mode_str.get(cfg.get(f"CH_{i}_MODE", "0"), "MEASURE")
+            ch_mode_vars[i].set(m_str)
+            start_ts = int(cfg.get(f"CH_{i}_START", "0"))
+            if start_ts == 0:
+                ch_immediate_vars[i].set(True)
+            else:
+                ch_immediate_vars[i].set(False)
+                _lt = time.localtime(start_ts)
+                ch_start_y_vars[i].set(str(_lt.tm_year))
+                ch_start_mo_vars[i].set(str(_lt.tm_mon))
+                ch_start_d_vars[i].set(str(_lt.tm_mday))
+                ch_start_h_vars[i].set(str(_lt.tm_hour))
+                ch_start_mi_vars[i].set(str(_lt.tm_min))
+            if m_str == "SETPOINT":
+                if f"CH_{i}_SETPOINT" in cfg: ch_sp_vars[i].set(cfg[f"CH_{i}_SETPOINT"])
+                if f"CH_{i}_DUR_MIN" in cfg: ch_dur_vars[i].set(cfg[f"CH_{i}_DUR_MIN"])
+            elif m_str == "SEQUENCE":
+                _pt = ch_phase_trees[i]
+                _pt.delete(*_pt.get_children())
+                n_phases = int(cfg.get(f"CH_{i}_NPHASES", "0"))
+                for j in range(n_phases):
+                    phase_val = cfg.get(f"CH_{i}_PHASE_{j}", "")
+                    if not phase_val:
+                        continue
+                    parts = phase_val.split(",")
+                    if len(parts) < 3:
+                        continue
+                    sp      = parts[0]
+                    dur_sec = int(parts[1])
+                    ptype   = parts[2]
+                    days    = dur_sec // 86400
+                    rem_    = dur_sec % 86400
+                    hours   = rem_ // 3600
+                    minutes = (rem_ % 3600) // 60
+                    if ptype == "d" and len(parts) >= 6:
+                        maxsp = parts[4]; peak = parts[5]
+                    else:
+                        maxsp = ""; peak = ""
+                    _pt.insert("", "end",
+                               values=(j + 1, ptype, days, hours, minutes,
+                                       sp, maxsp, peak))
+
     def _import_config():
         """Load a previously exported CONFIG.TXT and populate all GUI variables."""
         path = filedialog.askopenfilename(
@@ -1314,94 +1386,43 @@ def build_standalone_ui(root):
                     continue
                 key, _, val = line.partition("=")
                 cfg[key.strip()] = val.strip()
-
-        _mode_str = {"0": "MEASURE", "1": "SETPOINT", "2": "SEQUENCE"}
-
-        # ── sensor / channel counts (traces fire _update_active_channels) ──
-        ns  = int(cfg.get("NSENSORS", "1"))
-        nch = int(cfg.get("NCHANNELS", "1"))
-        nsensors_var.set(ns)
-        if ns == 2:
-            s1ch = int(cfg.get("S1CHANNELS", str(nch)))
-            s2ch = nch - s1ch
-            s1ch_var.set(s1ch)
-            s2ch_var.set(max(1, s2ch))
-        else:
-            s1ch_var.set(nch)
-
-        # ── interval ──
-        if "INTERVAL" in cfg:
-            interval_var.set(cfg["INTERVAL"])
-
-        # ── per-channel settings table ──
-        for i in range(nch):
-            if f"RELAY_{i}" in cfg:
-                relay_vars[i].set(cfg[f"RELAY_{i}"])
-            if f"TANKID_{i}" in cfg:
-                tank_vars[i].set(cfg[f"TANKID_{i}"])
-            if f"KP_{i}" in cfg:
-                kp_vars[i].set(cfg[f"KP_{i}"])
-            if f"KI_{i}" in cfg:
-                ki_vars[i].set(cfg[f"KI_{i}"])
-            if f"KD_{i}" in cfg:
-                kd_vars[i].set(cfg[f"KD_{i}"])
-
-        # ── per-channel mode, start time, setpoint / sequence ──
-        for i in range(nch):
-            # mode (trace auto-shows/hides SETPOINT or SEQUENCE panel)
-            m_str = _mode_str.get(cfg.get(f"CH_{i}_MODE", "0"), "MEASURE")
-            ch_mode_vars[i].set(m_str)
-
-            # start time
-            start_ts = int(cfg.get(f"CH_{i}_START", "0"))
-            if start_ts == 0:
-                ch_immediate_vars[i].set(True)
-            else:
-                ch_immediate_vars[i].set(False)
-                _lt = time.localtime(start_ts)
-                ch_start_y_vars[i].set(str(_lt.tm_year))
-                ch_start_mo_vars[i].set(str(_lt.tm_mon))
-                ch_start_d_vars[i].set(str(_lt.tm_mday))
-                ch_start_h_vars[i].set(str(_lt.tm_hour))
-                ch_start_mi_vars[i].set(str(_lt.tm_min))
-
-            # SETPOINT fields
-            if m_str == "SETPOINT":
-                if f"CH_{i}_SETPOINT" in cfg:
-                    ch_sp_vars[i].set(cfg[f"CH_{i}_SETPOINT"])
-                if f"CH_{i}_DUR_MIN" in cfg:
-                    ch_dur_vars[i].set(cfg[f"CH_{i}_DUR_MIN"])
-
-            # SEQUENCE phases
-            elif m_str == "SEQUENCE":
-                _pt = ch_phase_trees[i]
-                _pt.delete(*_pt.get_children())
-                n_phases = int(cfg.get(f"CH_{i}_NPHASES", "0"))
-                for j in range(n_phases):
-                    phase_val = cfg.get(f"CH_{i}_PHASE_{j}", "")
-                    if not phase_val:
-                        continue
-                    parts = phase_val.split(",")
-                    if len(parts) < 3:
-                        continue
-                    sp      = parts[0]
-                    dur_sec = int(parts[1])
-                    ptype   = parts[2]
-                    days    = dur_sec // 86400
-                    rem     = dur_sec % 86400
-                    hours   = rem // 3600
-                    minutes = (rem % 3600) // 60
-                    if ptype == "d" and len(parts) >= 6:
-                        maxsp = parts[4]
-                        peak  = parts[5]
-                    else:
-                        maxsp = ""
-                        peak  = ""
-                    _pt.insert("", "end",
-                               values=(j + 1, ptype, days, hours, minutes,
-                                       sp, maxsp, peak))
-
+        _apply_config_dict(cfg)
         cfg_status_var.set("Config imported ✓")
+
+    def _import_from_arduino():
+        """Read current in-memory config from Arduino over serial and populate GUI."""
+        if not connected or not ser:
+            messagebox.showerror("Error", "Not connected.")
+            return
+        cfg_status_var.set("Reading config from Arduino…")
+        inner.update_idletasks()
+        while not msg_queue.empty():
+            try: msg_queue.get_nowait()
+            except queue.Empty: break
+        send("CMD:READCONFIG")
+        lines = []
+        in_config = False
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            try:
+                line = msg_queue.get(timeout=0.1)
+                if line == "CONFIG_START":
+                    in_config = True
+                elif line == "CONFIG_END" and in_config:
+                    break
+                elif in_config and "=" in line:
+                    lines.append(line)
+            except queue.Empty:
+                pass
+        if not lines:
+            cfg_status_var.set("No config received — check connection ✗")
+            return
+        cfg = {}
+        for line in lines:
+            key, _, val = line.partition("=")
+            cfg[key.strip()] = val.strip()
+        _apply_config_dict(cfg)
+        cfg_status_var.set(f"Config imported from Arduino ✓  ({len(cfg)} keys)")
 
     send_btn.configure(command=_validate_and_send)
     cfg_outer._send_btn = send_btn
@@ -1465,11 +1486,149 @@ def build_standalone_ui(root):
         except (ValueError, IndexError):
             pass
 
+    # \u2500\u2500 Download Log Files \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    dl_frame = ttk.LabelFrame(run_frame, text="Download Log Files", padding=4)
+    dl_frame.pack(fill="x", pady=(0, 4))
+
+    dl_top = ttk.Frame(dl_frame)
+    dl_top.pack(fill="x", pady=(0, 2))
+    ttk.Button(dl_top, text="List Files",
+               command=lambda: _dl_list_files()).pack(side="left", padx=4)
+    ttk.Button(dl_top, text="Download Selected",
+               command=lambda: _dl_download()).pack(side="left", padx=4)
+    dl_status_var = tk.StringVar(value="Connect and click 'List Files' to begin")
+    ttk.Label(dl_top, textvariable=dl_status_var,
+              foreground="grey", font=("", 8)).pack(side="left", padx=8)
+
+    dl_prog_var = tk.DoubleVar(value=0)
+    ttk.Progressbar(dl_frame, variable=dl_prog_var, maximum=100).pack(
+        fill="x", padx=4, pady=(0, 2))
+
+    dl_cols = ("Filename", "Size", "Est. time")
+    dl_tree = ttk.Treeview(dl_frame, columns=dl_cols, show="headings", height=3)
+    for _dc, _dw in zip(dl_cols, (180, 80, 80)):
+        dl_tree.heading(_dc, text=_dc)
+        dl_tree.column(_dc, width=_dw, anchor="center")
+    dl_tree.pack(fill="x", padx=4, pady=(0, 4))
+
+    def _dl_list_files():
+        if not connected or not ser:
+            messagebox.showerror("Error", "Not connected.")
+            return
+        global _dl_routing
+        dl_status_var.set("Listing files\u2026")
+        dl_frame.update_idletasks()
+        while not _dl_msg_queue.empty():
+            try: _dl_msg_queue.get_nowait()
+            except queue.Empty: break
+        _dl_routing = True
+        send("CMD:LISTFILES")
+        for iid in dl_tree.get_children():
+            dl_tree.delete(iid)
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            try:
+                line = _dl_msg_queue.get(timeout=0.2)
+                if line == "FILES_DONE":
+                    break
+                elif line.startswith("FILE:"):
+                    parts = line[5:].rsplit(":", 1)
+                    if len(parts) == 2:
+                        fname = parts[0]
+                        try:
+                            sz = int(parts[1])
+                            sz_str  = f"{sz // 1024} KB"
+                            est_s   = sz / 1920
+                            est_str = f"~{int(est_s//60)}m {int(est_s%60)}s"
+                        except ValueError:
+                            sz_str = "?"; est_str = "?"
+                        dl_tree.insert("", "end", values=(fname, sz_str, est_str))
+            except queue.Empty:
+                pass
+        _dl_routing = False
+        n = len(dl_tree.get_children())
+        dl_status_var.set(f"{n} file(s) found" if n else "No .csv files on SD card")
+
+    def _dl_download():
+        sel = dl_tree.selection()
+        if not sel:
+            messagebox.showinfo("Download", "Select a file from the list first.")
+            return
+        if not connected or not ser:
+            messagebox.showerror("Error", "Not connected.")
+            return
+        fname = dl_tree.item(sel[0], "values")[0]
+        save_path = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+            title="Save log file as",
+            initialfile=fname
+        )
+        if not save_path:
+            return
+
+        def _worker():
+            global _dl_routing
+            try:
+                while not _dl_msg_queue.empty():
+                    try: _dl_msg_queue.get_nowait()
+                    except queue.Empty: break
+                _dl_routing = True
+                send(f"CMD:SENDFILE:{fname}")
+                total_bytes = 0
+                deadline = time.time() + 5.0
+                while time.time() < deadline:
+                    try:
+                        line = _dl_msg_queue.get(timeout=0.2)
+                        if line.startswith("FILESTART:"):
+                            try: total_bytes = int(line.rsplit(":", 1)[1])
+                            except (ValueError, IndexError): pass
+                            break
+                        elif "ACK:ERR" in line:
+                            dl_frame.after(0, lambda l=line: dl_status_var.set(f"Error: {l}"))
+                            _dl_routing = False; return
+                    except queue.Empty:
+                        pass
+                bytes_rx = 0; row_count = 0
+                with open(save_path, "w", newline="\n") as out:
+                    while True:
+                        try:
+                            line = _dl_msg_queue.get(timeout=15.0)
+                            if line.startswith("FLINE:"):
+                                content = line[6:]
+                                out.write(content + "\n")
+                                bytes_rx += len(content) + 1
+                                row_count += 1
+                                if total_bytes > 0:
+                                    pct = min(100.0, bytes_rx / total_bytes * 100)
+                                    dl_frame.after(0, lambda p=pct: dl_prog_var.set(p))
+                                if row_count % 100 == 0:
+                                    kb = bytes_rx // 1024
+                                    dl_frame.after(0, lambda k=kb: dl_status_var.set(
+                                        f"Downloading\u2026 {k} KB received"))
+                            elif line.startswith("FILEEND:"):
+                                break
+                        except queue.Empty:
+                            dl_frame.after(0, lambda: dl_status_var.set("Timeout \u2717"))
+                            _dl_routing = False; return
+                dl_frame.after(0, lambda: dl_prog_var.set(100))
+                short = save_path.replace("\\", "/").split("/")[-1]
+                dl_frame.after(0, lambda: dl_status_var.set(
+                    f"Saved {row_count} rows \u2192 {short} \u2713"))
+            except Exception as e:
+                dl_frame.after(0, lambda: dl_status_var.set(f"Error: {e}"))
+            finally:
+                _dl_routing = False
+
+        dl_prog_var.set(0)
+        dl_status_var.set("Starting download\u2026")
+        threading.Thread(target=_worker, daemon=True).start()
+
     # Serial log
     log_frame = ttk.LabelFrame(run_frame, text="Serial log", padding=4)
     log_frame.pack(fill="both", expand=True)
     log_text = tk.Text(log_frame, state="disabled", wrap="word",
-                       height=14, font=("Courier New", 9))
+                       height=8, font=("Courier New", 9))
     _log_scroll = ttk.Scrollbar(log_frame, orient="vertical",
                                 command=log_text.yview)
     log_text.configure(yscrollcommand=_log_scroll.set)

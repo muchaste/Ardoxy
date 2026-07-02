@@ -43,6 +43,9 @@
       CMD:STATUS
       CMD:SAVECONFIG                 write current config to CONFIG.TXT on SD
       CMD:TESTPIN:<pin>:<0|1>        open (1) or close (0) relay by pin nr; blocked while RUNNING
+      CMD:READCONFIG                 transmit current in-memory config over serial (key=value)
+      CMD:LISTFILES                  list all .csv log files on SD with file sizes
+      CMD:SENDFILE:<filename>        stream a log file over serial as FLINE: rows
       CMD:SETRTC:<Y>:<M>:<D>:<h>:<m>:<s>
 
     Arduino -> PC:
@@ -995,6 +998,97 @@ void processCommand(char* buf) {
 
         if (strcmp_P(key, PSTR("SAVECONFIG")) == 0) {
             saveConfig();
+            return;
+        }
+
+        if (strcmp_P(key, PSTR("READCONFIG")) == 0) {
+            if (state == RUNNING) { Serial.println(F("ACK:ERR:Running")); return; }
+            Serial.println(F("CONFIG_START"));
+            Serial.print(F("NCHANNELS=")); Serial.println(nChannels);
+            Serial.print(F("NSENSORS="));  Serial.println(nSensors);
+            Serial.print(F("S1CHANNELS=")); Serial.println(s1Channels);
+            for (int i = 0; i < MAX_CHANNELS; i++) {
+                Serial.print(F("RELAY_")); Serial.print(i); Serial.print('='); Serial.println(relayPins[i]);
+            }
+            Serial.print(F("INTERVAL=")); Serial.println(sampInterval);
+            for (int i = 0; i < MAX_CHANNELS; i++) {
+                Serial.print(F("TANKID_")); Serial.print(i); Serial.print('='); Serial.println(tankID[i]);
+            }
+            for (int i = 0; i < MAX_CHANNELS; i++) {
+                Serial.print(F("KP_")); Serial.print(i); Serial.print('='); Serial.println(Kp[i], 4);
+                Serial.print(F("KI_")); Serial.print(i); Serial.print('='); Serial.println(Ki[i], 4);
+                Serial.print(F("KD_")); Serial.print(i); Serial.print('='); Serial.println(Kd[i], 4);
+            }
+            for (int i = 0; i < MAX_CHANNELS; i++) {
+                Serial.print(F("CH_")); Serial.print(i); Serial.print(F("_MODE="));     Serial.println((int)chMode[i]);
+                Serial.print(F("CH_")); Serial.print(i); Serial.print(F("_START="));    Serial.println(chStart[i]);
+                Serial.print(F("CH_")); Serial.print(i); Serial.print(F("_SETPOINT=")); Serial.println(chSetpoint[i], 4);
+                Serial.print(F("CH_")); Serial.print(i); Serial.print(F("_DUR_MIN="));  Serial.println(chDurationMin[i]);
+                Serial.print(F("CH_")); Serial.print(i); Serial.print(F("_NPHASES="));  Serial.println(chNPhases[i]);
+                for (int j = 0; j < chNPhases[i]; j++) {
+                    Serial.print(F("CH_")); Serial.print(i); Serial.print(F("_PHASE_")); Serial.print(j); Serial.print('=');
+                    Serial.print(chPhaseSP[i][j], 4);   Serial.print(',');
+                    Serial.print(chPhaseDurSec[i][j]);   Serial.print(',');
+                    Serial.print(chPhaseType[i][j]);
+                    if (chPhaseType[i][j] == 'd') {
+                        Serial.print(','); Serial.print(chPhaseMinSP[i][j],   4);
+                        Serial.print(','); Serial.print(chPhaseMaxSP[i][j],   4);
+                        Serial.print(','); Serial.print(chPhasePeakHour[i][j], 4);
+                    }
+                    Serial.println();
+                }
+            }
+            Serial.println(F("CONFIG_END"));
+            return;
+        }
+
+        if (strcmp_P(key, PSTR("LISTFILES")) == 0) {
+            if (state == RUNNING) { Serial.println(F("ACK:ERR:Running")); return; }
+            if (!sdReady) { Serial.println(F("ACK:ERR:SD not ready")); return; }
+            FsFile root, f;
+            root.open("/");
+            char fname[25];
+            while (f.openNext(&root, O_RDONLY)) {
+                f.getName(fname, sizeof(fname));
+                int len = strlen(fname);
+                if (!f.isDir() && len > 4 && strcmp(fname + len - 4, ".csv") == 0) {
+                    Serial.print(F("FILE:")); Serial.print(fname);
+                    Serial.print(':');         Serial.println(f.fileSize());
+                }
+                f.close();
+            }
+            root.close();
+            Serial.println(F("FILES_DONE"));
+            return;
+        }
+
+        if (strcmp_P(key, PSTR("SENDFILE")) == 0) {
+            if (state == RUNNING) { Serial.println(F("ACK:ERR:Running")); return; }
+            if (!sdReady) { Serial.println(F("ACK:ERR:SD not ready")); return; }
+            char* fname = strtok(NULL, ":");
+            if (!fname) { Serial.println(F("ACK:ERR:SENDFILE fmt")); return; }
+            if (strchr(fname, '/') || strstr(fname, "..")) {
+                Serial.println(F("ACK:ERR:SENDFILE path")); return;
+            }
+            FsFile f = SD.open(fname, O_READ);
+            if (!f) { Serial.println(F("ACK:ERR:SENDFILE notfound")); return; }
+            Serial.print(F("FILESTART:")); Serial.print(fname);
+            Serial.print(':');             Serial.println(f.fileSize());
+            uint32_t lineCount = 0;
+            bool lineStart = true;
+            while (f.available()) {
+                char c = (char)f.read();
+                if (c == '\r') continue;
+                if (c == '\n') {
+                    if (!lineStart) { Serial.println(); lineCount++; lineStart = true; }
+                } else {
+                    if (lineStart) { Serial.print(F("FLINE:")); lineStart = false; }
+                    Serial.write(c);
+                }
+            }
+            if (!lineStart) { Serial.println(); lineCount++; }
+            f.close();
+            Serial.print(F("FILEEND:")); Serial.println(lineCount);
             return;
         }
 
