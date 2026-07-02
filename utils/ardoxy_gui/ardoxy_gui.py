@@ -802,7 +802,7 @@ def build_standalone_ui(root):
                   font=("", 9, "bold")).grid(row=0, column=_col, padx=6, pady=2, sticky="w")
     tank_vars       = [tk.StringVar(value=f"CH{i+1}") for i in range(8)]
     kp_vars         = [tk.StringVar(value="10.0") for _ in range(8)]
-    ki_vars         = [tk.StringVar(value="1.0")  for _ in range(8)]
+    ki_vars         = [tk.StringVar(value="0.0")  for _ in range(8)]
     kd_vars         = [tk.StringVar(value="0.0")  for _ in range(8)]
     _default_pins   = [23, 25, 27, 29, 31, 33, 35, 37]
     relay_vars      = [tk.StringVar(value=str(_default_pins[i])) for i in range(8)]
@@ -1073,10 +1073,10 @@ def build_standalone_ui(root):
         ttk.Button(_pb, text="Paste sequence",
                    command=_make_ch_paste()).pack(side="left", padx=4)
         ttk.Label(_pb,
-                  text="For 'd': SP/minSP=min DO, maxSP=max DO, peakHour=h of max",
+                  text="For 'd': SP/minSP=min DO, maxSP=max DO, peakHour=h of max  |  For 'c': SP=target, maxSP=start DO (0=auto)",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
-        _pt.insert("", "end", values=(1, "h", "0", "1", "0", "50.0", "", ""))
-        _pt.insert("", "end", values=(2, "h", "0", "1", "0", "30.0", "", ""))
+        _pt.insert("", "end", values=(1, "c", "0", "1", "0", "15.0", "100.0", ""))
+        _pt.insert("", "end", values=(2, "h", "0", "1", "0", "15.0", "", ""))
 
         # Show/hide mode-specific panels
         def _make_mode_toggle(_mv=_mv, _sp_pf=_sp_pf, _seq_pf=_seq_pf, _rf=_rf):
@@ -1219,6 +1219,10 @@ def build_standalone_ui(root):
                         ok = ok and ack(
                             f"CFG:CH:{i}:PHASE:{idx}:{sp}:{d_v}:{h_v}:{mi_v}"
                             f":d:{sp}:{maxsp}:{peak}")
+                    elif ptype == "c":
+                        startDO = maxsp if maxsp and maxsp != "0" else "0"
+                        ok = ok and ack(
+                            f"CFG:CH:{i}:PHASE:{idx}:{sp}:{d_v}:{h_v}:{mi_v}:c:{startDO}")
                     else:
                         ok = ok and ack(
                             f"CFG:CH:{i}:PHASE:{idx}:{sp}:{d_v}:{h_v}:{mi_v}:{ptype}")
@@ -1292,6 +1296,8 @@ def build_standalone_ui(root):
                             return
                         lines.append(
                             f"CH_{i}_PHASE_{j}={sp},{dur_sec},{ptype},{sp},{maxsp},{peak}")
+                    elif ptype == "c" and maxsp and maxsp != "0":
+                        lines.append(f"CH_{i}_PHASE_{j}={sp},{dur_sec},{ptype},{maxsp}")
                     else:
                         lines.append(f"CH_{i}_PHASE_{j}={sp},{dur_sec},{ptype}")
         path = filedialog.asksaveasfilename(
@@ -1364,6 +1370,8 @@ def build_standalone_ui(root):
                     minutes = (rem_ % 3600) // 60
                     if ptype == "d" and len(parts) >= 6:
                         maxsp = parts[4]; peak = parts[5]
+                    elif ptype == "c" and len(parts) >= 4:
+                        maxsp = parts[3]; peak = ""  # start DO for 'c' phase
                     else:
                         maxsp = ""; peak = ""
                     _pt.insert("", "end",
