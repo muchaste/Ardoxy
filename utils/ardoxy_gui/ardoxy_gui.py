@@ -1073,7 +1073,7 @@ def build_standalone_ui(root):
         ttk.Button(_pb, text="Paste sequence",
                    command=_make_ch_paste()).pack(side="left", padx=4)
         ttk.Label(_pb,
-                  text="For 'd': SP/minSP=min DO, maxSP=max DO, peakHour=h of max  |  For 'c': SP=target, maxSP=start DO (0=auto)",
+                  text="For 'd': SP/minSP=min DO, maxSP=max DO, peakHour=h of max  |  For 'c': SP=target, maxSP=start DO (required)",
                   foreground="grey", font=("", 8)).pack(side="left", padx=8)
         _pt.insert("", "end", values=(1, "c", "0", "1", "0", "15.0", "100.0", ""))
         _pt.insert("", "end", values=(2, "h", "0", "1", "0", "15.0", "", ""))
@@ -1220,9 +1220,13 @@ def build_standalone_ui(root):
                             f"CFG:CH:{i}:PHASE:{idx}:{sp}:{d_v}:{h_v}:{mi_v}"
                             f":d:{sp}:{maxsp}:{peak}")
                     elif ptype == "c":
-                        startDO = maxsp if maxsp and maxsp != "0" else "0"
+                        if not v[6] or float(v[6]) <= 0:
+                            messagebox.showerror("Invalid config",
+                                f"CH{i+1} phase {idx+1}: ramp phase requires startDO (maxSP field, must be > 0).")
+                            cfg_status_var.set("Config FAILED \u2717")
+                            return
                         ok = ok and ack(
-                            f"CFG:CH:{i}:PHASE:{idx}:{sp}:{d_v}:{h_v}:{mi_v}:c:{startDO}")
+                            f"CFG:CH:{i}:PHASE:{idx}:{sp}:{d_v}:{h_v}:{mi_v}:c:{maxsp}")
                     else:
                         ok = ok and ack(
                             f"CFG:CH:{i}:PHASE:{idx}:{sp}:{d_v}:{h_v}:{mi_v}:{ptype}")
@@ -1296,7 +1300,12 @@ def build_standalone_ui(root):
                             return
                         lines.append(
                             f"CH_{i}_PHASE_{j}={sp},{dur_sec},{ptype},{sp},{maxsp},{peak}")
-                    elif ptype == "c" and maxsp and maxsp != "0":
+                    elif ptype == "c":
+                        if not v[6] or float(v[6]) <= 0:
+                            messagebox.showerror("Invalid config",
+                                f"CH{i+1} phase {j+1}: ramp phase requires startDO (maxSP field, must be > 0).")
+                            cfg_status_var.set("Export FAILED \u2717")
+                            return
                         lines.append(f"CH_{i}_PHASE_{j}={sp},{dur_sec},{ptype},{maxsp}")
                     else:
                         lines.append(f"CH_{i}_PHASE_{j}={sp},{dur_sec},{ptype}")

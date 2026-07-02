@@ -31,9 +31,9 @@
       CFG:CH:<ch>:SETPOINT:<float>   SETPOINT mode target DO
       CFG:CH:<ch>:DURATION:<minutes> SETPOINT duration in minutes
       CFG:CH:<ch>:NPHASES:<n>        number of phases (1..MAX_PHASES)
-      CFG:CH:<ch>:PHASE:<idx>:<sp>:<dur_d>:<dur_h>:<dur_m>:<type>[:<min_sp>:<max_sp>:<peak_h>]
+      CFG:CH:<ch>:PHASE:<idx>:<sp>:<dur_d>:<dur_h>:<dur_m>:<type>[:<params>]
         type: h=hold  c=change  p=pause  d=daily-cycle
-        min_sp/max_sp/peak_h required only when type == 'd'
+        startDO (>0) required when type == 'c'; min_sp/max_sp/peak_h required when type == 'd'
 
     PC -> Arduino  — commands —
       CMD:START
@@ -134,7 +134,7 @@ float    chPhaseSP[MAX_CHANNELS][MAX_PHASES];        // hold / change target DO
 uint32_t chPhaseDurSec[MAX_CHANNELS][MAX_PHASES];    // phase duration in seconds
 char     chPhaseType[MAX_CHANNELS][MAX_PHASES];      // 'h','c','p','d'
 float    chPhaseMinSP[MAX_CHANNELS][MAX_PHASES];     // 'd': min DO
-float    chPhaseMaxSP[MAX_CHANNELS][MAX_PHASES];     // 'd': max DO; 'c': start DO (0=auto)
+float    chPhaseMaxSP[MAX_CHANNELS][MAX_PHASES];     // 'd': max DO; 'c': start DO (required, >0)
 float    chPhasePeakHour[MAX_CHANNELS][MAX_PHASES];  // 'd': hour of maximum (0–24)
 
 // ─── PIDs ─────────────────────────────────────────────────────────────────────
@@ -887,9 +887,10 @@ void runAllChannels() {
                 valvePIDs[i]->Compute();
 
             } else if (pt == 'c') {
-                // Linear ramp: use configured start DO if set; otherwise first measured DO
+                // Linear ramp from startDO to targetSP; startDO required (set via chPhaseMaxSP).
+                // If unconfigured (0), falls back to target SP — behaves as hold, no ramp.
                 if (chPhaseStartDO[i] <= 0.0f) {
-                    chPhaseStartDO[i] = chPhaseMaxSP[i][pi] > 0.0f ? chPhaseMaxSP[i][pi] : (float)doVals[i];
+                    chPhaseStartDO[i] = chPhaseMaxSP[i][pi] > 0.0f ? chPhaseMaxSP[i][pi] : chPhaseSP[i][pi];
                 }
                 uint32_t phaseStartUnix = chCurrentPhaseEndUnix[i] - chPhaseDurSec[i][pi];
                 float elapsed = (nowUnix > phaseStartUnix) ? (float)(nowUnix - phaseStartUnix) : 0.0f;
@@ -1220,7 +1221,10 @@ void processCommand(char* buf) {
                     }
                 } else if (tStr[0] == 'c') {
                     char* startStr = strtok(NULL, ":");
-                    chPhaseMaxSP[ch][idx] = (startStr && atof(startStr) > 0.0f) ? atof(startStr) : 0.0f;
+                    if (!startStr || atof(startStr) <= 0.0f) {
+                        Serial.println(F("ACK:ERR:CH:PHASE c requires startDO>0")); return;
+                    }
+                    chPhaseMaxSP[ch][idx] = atof(startStr);
                 }
 
             } else {
