@@ -1144,7 +1144,7 @@ def build_standalone_ui(root):
     ttk.Button(action_row, text="Import Config…",
                command=lambda: _import_config()).pack(side="left", padx=4)
     ttk.Button(action_row, text="Read from Arduino…",
-               command=_import_from_arduino).pack(side="left", padx=4)
+               command=lambda: _import_from_arduino()).pack(side="left", padx=4)
     ttk.Label(action_row, textvariable=cfg_status_var,
               foreground="blue").pack(side="left", padx=4)
     r += 1
