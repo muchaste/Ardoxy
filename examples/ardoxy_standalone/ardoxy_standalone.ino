@@ -43,7 +43,8 @@
       CMD:STATUS
       CMD:SAVECONFIG                 write current config to CONFIG.TXT on SD
       CMD:TESTPIN:<pin>:<0|1>        open (1) or close (0) relay by pin nr; blocked while RUNNING
-      CMD:READCONFIG                 transmit current in-memory config over serial (key=value)
+      CMD:READCONFIG                 emit config (loads SD first if IDLE; uses in-memory if CONFIGURED)
+      CMD:RECOVER                    resume experiment from STATE.TXT; blocked if IDLE or RUNNING
       CMD:LISTFILES                  list all .csv log files on SD with file sizes
       CMD:SENDFILE:<filename>        stream a log file over serial as FLINE: rows
       CMD:SETRTC:<Y>:<M>:<D>:<h>:<m>:<s>
@@ -1127,6 +1128,14 @@ void processCommand(char* buf) {
             startExperiment();
             return;
         }
+
+        if (strcmp_P(key, PSTR("RECOVER")) == 0) {
+            if (state == IDLE)    { Serial.println(F("ACK:ERR:Not configured")); return; }
+            if (state == RUNNING) { Serial.println(F("ACK:ERR:Running")); return; }
+            if (!sdReady || !SD.exists("STATE.TXT")) { Serial.println(F("ACK:ERR:No recovery data")); return; }
+            recoverExperiment();
+            return;
+        }
         return;
     }
 
@@ -1344,9 +1353,17 @@ void setup() {
     }
 
     if (gotSerial) {
-        // Serial config session: GUI will send CFG:* then CMD:START
-        lcd.clear(); lcd.print(F("Serial config..."));
-        Serial.println(F("MSG:Serial config mode"));
+        // If a config exists on SD, load it so the user can start/recover without re-uploading
+        lcd.clear(); lcd.print(F("Serial mode..."));
+        if (sdReady && loadConfig()) {
+            state = CONFIGURED;
+            Serial.println(F("MSG:Config loaded from SD — ready"));
+            if (SD.exists("STATE.TXT")) {
+                Serial.println(F("MSG:Recovery data found — CMD:RECOVER to resume"));
+            }
+        } else {
+            Serial.println(F("MSG:No SD config — send CFG: commands"));
+        }
     } else {
         // Auto-start from SD
         lcd.clear(); lcd.print(F("Loading SD cfg.."));

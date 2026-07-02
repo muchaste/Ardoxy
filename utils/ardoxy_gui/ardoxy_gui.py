@@ -1436,13 +1436,15 @@ def build_standalone_ui(root):
     ctrl_bar = ttk.Frame(run_frame)
     ctrl_bar.pack(fill="x", pady=(0, 6))
 
-    sa_start_btn  = ttk.Button(ctrl_bar, text="▶  Start")
+    sa_start_btn   = ttk.Button(ctrl_bar, text="▶  Start")
     sa_start_btn.pack(side="left", padx=4)
-    sa_pause_btn  = ttk.Button(ctrl_bar, text="⏸  Pause",  state="disabled")
+    sa_recover_btn = ttk.Button(ctrl_bar, text="↺  Recover")
+    sa_recover_btn.pack(side="left", padx=4)
+    sa_pause_btn   = ttk.Button(ctrl_bar, text="⏸  Pause",  state="disabled")
     sa_pause_btn.pack(side="left", padx=4)
-    sa_resume_btn = ttk.Button(ctrl_bar, text="▶  Resume", state="disabled")
+    sa_resume_btn  = ttk.Button(ctrl_bar, text="▶  Resume", state="disabled")
     sa_resume_btn.pack(side="left", padx=4)
-    sa_stop_btn   = ttk.Button(ctrl_bar, text="■  Stop",   state="disabled")
+    sa_stop_btn    = ttk.Button(ctrl_bar, text="■  Stop",   state="disabled")
     sa_stop_btn.pack(side="left", padx=4)
 
     sa_info_var = tk.StringVar(value="Idle")
@@ -1643,18 +1645,21 @@ def build_standalone_ui(root):
 
     def _sa_set_running():
         sa_start_btn.configure(state="disabled")
+        sa_recover_btn.configure(state="disabled")
         sa_pause_btn.configure(state="normal")
         sa_resume_btn.configure(state="disabled")
         sa_stop_btn.configure(state="normal")
         sa_info_var.set("Running…")
 
     def _sa_set_state_paused():
+        sa_recover_btn.configure(state="disabled")
         sa_pause_btn.configure(state="disabled")
         sa_resume_btn.configure(state="normal")
         sa_info_var.set("Paused")
 
     def _sa_set_state_stopped(msg="Stopped"):
         sa_start_btn.configure(state="normal")
+        sa_recover_btn.configure(state="normal")
         sa_pause_btn.configure(state="disabled")
         sa_resume_btn.configure(state="disabled")
         sa_stop_btn.configure(state="disabled")
@@ -1679,7 +1684,15 @@ def build_standalone_ui(root):
         send("CMD:STOP")
         _sa_set_state_stopped()
 
+    def _sa_do_recover():
+        if not connected or not ser:
+            messagebox.showerror("Error", "Not connected.")
+            return
+        send("CMD:RECOVER")
+        _sa_set_running()
+
     sa_start_btn.configure(command=_sa_do_start)
+    sa_recover_btn.configure(command=_sa_do_recover)
     sa_pause_btn.configure(command=_sa_do_pause)
     sa_resume_btn.configure(command=_sa_do_resume)
     sa_stop_btn.configure(command=_sa_do_stop)
@@ -1689,6 +1702,7 @@ def build_standalone_ui(root):
     run_frame._update_chart_and_table = lambda d: None
     run_frame._info_var             = sa_info_var
     run_frame._start_btn            = sa_start_btn
+    run_frame._recover_btn          = sa_recover_btn
     run_frame._pause_btn            = sa_pause_btn
     run_frame._stop_btn             = sa_stop_btn
     run_frame._set_state_stopped    = _sa_set_state_stopped
