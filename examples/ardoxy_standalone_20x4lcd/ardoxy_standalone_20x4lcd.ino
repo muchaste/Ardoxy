@@ -81,7 +81,6 @@
 #include <LiquidCrystal_I2C.h>
 #include <avr/wdt.h>
 
-#define WHITE        0x7
 #define MAX_CHANNELS 8
 #define MAX_PHASES   6              // phases per channel (was 10 global in v1)
 #define RECV_BUF     96
@@ -134,7 +133,7 @@ float    chPhaseSP[MAX_CHANNELS][MAX_PHASES];        // hold / change target DO
 uint32_t chPhaseDurSec[MAX_CHANNELS][MAX_PHASES];    // phase duration in seconds
 char     chPhaseType[MAX_CHANNELS][MAX_PHASES];      // 'h','c','p','d'
 float    chPhaseMinSP[MAX_CHANNELS][MAX_PHASES];     // 'd': min DO
-float    chPhaseMaxSP[MAX_CHANNELS][MAX_PHASES];     // 'd': max DO
+float    chPhaseMaxSP[MAX_CHANNELS][MAX_PHASES];     // 'd': max DO; 'c': start DO (0=auto)
 float    chPhasePeakHour[MAX_CHANNELS][MAX_PHASES];  // 'd': hour of maximum (0–24)
 
 // ─── PIDs ─────────────────────────────────────────────────────────────────────
@@ -162,7 +161,6 @@ int  recvIdx = 0;
 uint32_t expStartUnix    = 0;    // RTC unixtime of CMD:START (for elapsed-time log column)
 uint32_t pauseStartUnix  = 0;
 int      windowSize      = 0;
-double   doFloatPrev[MAX_CHANNELS] = {0};
 unsigned long loopStart  = 0;
 
 // ─── SD / logging state ───────────────────────────────────────────────────────
@@ -435,7 +433,6 @@ void writeToSD(double* doVals, double* tempVals) {
 // ═══════════════════════════════════════════════════════════════════════════════
 void writeState() {
     if (!sdReady) { sdError = true; return; }
-    sdError = false;
     FsFile stFile = SD.open("STATE.TXT", O_WRITE | O_CREAT | O_TRUNC);
     if (!stFile) { sdError = true; return; }
     sdError = false;
@@ -548,6 +545,8 @@ void saveConfig() {
                 cfgFile.print(','); cfgFile.print(chPhaseMinSP[i][j],   4);
                 cfgFile.print(','); cfgFile.print(chPhaseMaxSP[i][j],   4);
                 cfgFile.print(','); cfgFile.print(chPhasePeakHour[i][j], 4);
+            } else if (chPhaseType[i][j] == 'c' && chPhaseMaxSP[i][j] > 0.0f) {
+                cfgFile.print(','); cfgFile.print(chPhaseMaxSP[i][j], 4);  // start DO
             }
             cfgFile.println();
         }
@@ -572,7 +571,7 @@ static void parseConfigLine(char* key, char* val) {
 
     // ── indexed keys: RELAY_i, TANKID_i, KP_i, KI_i, KD_i ──────────────────
     if (strncmp(key, "RELAY_",  6) == 0) { int i=atoi(key+6);  if (i>=0&&i<MAX_CHANNELS) relayPins[i]=atoi(val);         return; }
-    if (strncmp(key, "TANKID_", 7) == 0) { int i=atoi(key+7);  if (i>=0&&i<MAX_CHANNELS) strncpy(tankID[i],val,6);       return; }
+    if (strncmp(key, "TANKID_", 7) == 0) { int i=atoi(key+7);  if (i>=0&&i<MAX_CHANNELS) { strncpy(tankID[i],val,6); tankID[i][6]='\0'; } return; }
     if (strncmp(key, "KP_",     3) == 0) { int i=atoi(key+3);  if (i>=0&&i<MAX_CHANNELS) Kp[i]=atof(val);                return; }
     if (strncmp(key, "KI_",     3) == 0) { int i=atoi(key+3);  if (i>=0&&i<MAX_CHANNELS) Ki[i]=atof(val);                return; }
     if (strncmp(key, "KD_",     3) == 0) { int i=atoi(key+3);  if (i>=0&&i<MAX_CHANNELS) Kd[i]=atof(val);                return; }
@@ -607,6 +606,9 @@ static void parseConfigLine(char* key, char* val) {
             tok = strtok(NULL, ","); if (!tok) return; chPhaseMinSP[ch][j]    = atof(tok);
             tok = strtok(NULL, ","); if (!tok) return; chPhaseMaxSP[ch][j]    = atof(tok);
             tok = strtok(NULL, ","); if (!tok) return; chPhasePeakHour[ch][j] = atof(tok);
+        } else if (tok[0] == 'c') {
+            tok = strtok(NULL, ",");
+            chPhaseMaxSP[ch][j] = (tok && atof(tok) > 0.0f) ? atof(tok) : 0.0f;  // start DO (0=auto)
         }
     }
 }
@@ -676,7 +678,6 @@ void startExperiment() {
         chPhaseIdx[i]    = 0;
         chDone[i]        = false;
         chPhaseStartDO[i] = 0.0f;
-        doFloatPrev[i]   = 0.0;
 
         // Normalise chStart: 0 means "start immediately at CMD:START"
         if (chStart[i] == 0) chStart[i] = expStartUnix;
@@ -704,7 +705,7 @@ void startExperiment() {
                     holdSP[i] = dailyCycleSP(chPhaseMinSP[i][0], chPhaseMaxSP[i][0], chPhasePeakHour[i][0], _hr);
                     valvePIDs[i]->SetMode(AUTOMATIC);
                 } else if (t == 'c') {
-                    chPhaseStartDO[i] = 0.0f;  // sentinel: set from first measurement
+                    chPhaseStartDO[i] = chPhaseMaxSP[i][0] > 0.0f ? chPhaseMaxSP[i][0] : 0.0f;
                     valvePIDs[i]->SetMode(AUTOMATIC);
                 }
                 // 'p': all PIDs remain MANUAL (relays closed)
@@ -760,7 +761,7 @@ void recoverExperiment() {
                     float _hr = _dt.hour() + _dt.minute() / 60.0f + _dt.second() / 3600.0f;
                     holdSP[i] = dailyCycleSP(chPhaseMinSP[i][chPhaseIdx[i]], chPhaseMaxSP[i][chPhaseIdx[i]], chPhasePeakHour[i][chPhaseIdx[i]], _hr);
                     valvePIDs[i]->SetMode(AUTOMATIC);
-                } else if (t == 'c') { chPhaseStartDO[i] = 0.0f; valvePIDs[i]->SetMode(AUTOMATIC); }
+                } else if (t == 'c') { chPhaseStartDO[i] = chPhaseMaxSP[i][chPhaseIdx[i]] > 0.0f ? chPhaseMaxSP[i][chPhaseIdx[i]] : 0.0f; valvePIDs[i]->SetMode(AUTOMATIC); }
                 // 'p': both PIDs remain MANUAL
             }
         }
@@ -858,7 +859,6 @@ void runAllChannels() {
         // First activation: WAITING channel just became active this cycle
         if (!chActive[i]) {
             chActive[i]    = true;
-            doFloatPrev[i] = doVals[i];  // seed rate tracking
             if (chMode[i] == CH_SETPOINT) {
                 holdSP[i] = chSetpoint[i];
                 valvePIDs[i]->SetMode(AUTOMATIC);
@@ -870,7 +870,7 @@ void runAllChannels() {
                     float _hr = nowDT.hour() + nowDT.minute() / 60.0f + nowDT.second() / 3600.0f;
                     holdSP[i] = dailyCycleSP(chPhaseMinSP[i][chPhaseIdx[i]], chPhaseMaxSP[i][chPhaseIdx[i]], chPhasePeakHour[i][chPhaseIdx[i]], _hr);
                     valvePIDs[i]->SetMode(AUTOMATIC);
-                } else if (t == 'c') { chPhaseStartDO[i] = doVals[i]; valvePIDs[i]->SetMode(AUTOMATIC); }
+                } else if (t == 'c') { chPhaseStartDO[i] = chPhaseMaxSP[i][chPhaseIdx[i]] > 0.0f ? chPhaseMaxSP[i][chPhaseIdx[i]] : (float)doVals[i]; valvePIDs[i]->SetMode(AUTOMATIC); }
                 // 'p': all PIDs remain MANUAL
             }
             Serial.print(F("MSG:CH")); Serial.print(i); Serial.println(F(" started"));
@@ -908,7 +908,7 @@ void runAllChannels() {
                     float _hr = nowDT.hour() + nowDT.minute() / 60.0f + nowDT.second() / 3600.0f;
                     holdSP[i] = dailyCycleSP(chPhaseMinSP[i][chPhaseIdx[i]], chPhaseMaxSP[i][chPhaseIdx[i]], chPhasePeakHour[i][chPhaseIdx[i]], _hr);
                     valvePIDs[i]->SetMode(AUTOMATIC);
-                } else if (nt == 'c') { chPhaseStartDO[i] = doVals[i]; valvePIDs[i]->SetMode(AUTOMATIC); }
+                } else if (nt == 'c') { chPhaseStartDO[i] = chPhaseMaxSP[i][chPhaseIdx[i]] > 0.0f ? chPhaseMaxSP[i][chPhaseIdx[i]] : (float)doVals[i]; valvePIDs[i]->SetMode(AUTOMATIC); }
                 else                  { valvePIDs[i]->SetMode(MANUAL); }  // 'p'
                 Serial.print(F("MSG:CH")); Serial.print(i);
                 Serial.print(F(":phase ")); Serial.println(chPhaseIdx[i]);
@@ -933,8 +933,10 @@ void runAllChannels() {
                 valvePIDs[i]->Compute();
 
             } else if (pt == 'c') {
-                // Linear ramp: interpolate from phase-start DO to target DO over phase duration
-                if (chPhaseStartDO[i] <= 0.0f) chPhaseStartDO[i] = (float)doVals[i];
+                // Linear ramp: use configured start DO if set; otherwise first measured DO
+                if (chPhaseStartDO[i] <= 0.0f) {
+                    chPhaseStartDO[i] = chPhaseMaxSP[i][pi] > 0.0f ? chPhaseMaxSP[i][pi] : (float)doVals[i];
+                }
                 uint32_t phaseStartUnix = chCurrentPhaseEndUnix[i] - chPhaseDurSec[i][pi];
                 float elapsed = (nowUnix > phaseStartUnix) ? (float)(nowUnix - phaseStartUnix) : 0.0f;
                 float total   = (float)chPhaseDurSec[i][pi];
@@ -942,8 +944,6 @@ void runAllChannels() {
                 holdSP[i]     = chPhaseStartDO[i] + (chPhaseSP[i][pi] - chPhaseStartDO[i]) * frac;
                 valvePIDs[i]->Compute();
             }
-
-            doFloatPrev[i] = doVals[i];
         }
     }
 
@@ -1080,6 +1080,8 @@ void processCommand(char* buf) {
                         Serial.print(','); Serial.print(chPhaseMinSP[i][j],   4);
                         Serial.print(','); Serial.print(chPhaseMaxSP[i][j],   4);
                         Serial.print(','); Serial.print(chPhasePeakHour[i][j], 4);
+                    } else if (chPhaseType[i][j] == 'c' && chPhaseMaxSP[i][j] > 0.0f) {
+                        Serial.print(','); Serial.print(chPhaseMaxSP[i][j], 4);
                     }
                     Serial.println();
                 }
@@ -1262,6 +1264,9 @@ void processCommand(char* buf) {
                     if (chPhaseMinSP[ch][idx] >= chPhaseMaxSP[ch][idx]) {
                         Serial.println(F("ACK:ERR:CH:PHASE daily minSP>=maxSP")); return;
                     }
+                } else if (tStr[0] == 'c') {
+                    char* startStr = strtok(NULL, ":");
+                    chPhaseMaxSP[ch][idx] = (startStr && atof(startStr) > 0.0f) ? atof(startStr) : 0.0f;
                 }
 
             } else {
@@ -1296,7 +1301,7 @@ void processCommand(char* buf) {
         } else if (strcmp_P(key, PSTR("TANKID")) == 0) {
             int ch = atoi(val);
             char* idStr = strtok(NULL, ":");
-            if (ch >= 0 && ch < MAX_CHANNELS && idStr) strncpy(tankID[ch], idStr, 6);
+            if (ch >= 0 && ch < MAX_CHANNELS && idStr) { strncpy(tankID[ch], idStr, 6); tankID[ch][6] = '\0'; }
 
         } else if (strcmp_P(key, PSTR("KP")) == 0) {
             int ch = atoi(val);
