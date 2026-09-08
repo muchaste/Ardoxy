@@ -17,14 +17,25 @@ Mucha, S. (2025). A microcontroller-based system for flexible oxygen control in 
 
 [Read the article](https://journals.biologists.com/jeb/article/228/1/jeb249207/364933/A-microcontroller-based-system-for-flexible-oxygen)
 
+## Published Use Cases
+
+Studies that have used Ardoxy or its predecessor sketches:
+
+* Pereira BP, Neff S, Borges FO, Otjacques E, Barreto G, Ranucci M, Court M, Rosa R, Repolho T, Paula JR (2024). Transgenerational exposure to deoxygenation and warming disrupts mate detection in *Gammarus locusta*. *Behavioral Ecology*, 35(1), arad102. https://doi.org/10.1093/beheco/arad102
+* Gomes M, Lopes VM, Mai MG, Paula JR, Bispo R, Batista H, Barraca C, Baylina N, Rosa R, Pimentel MS (2023). Impacts of acute hypoxia on the short-snouted seahorse metabolism and behaviour. *Science of The Total Environment*, 904, 166893. https://doi.org/10.1016/j.scitotenv.2023.166893
+* Court M, Macau M, Marquês T, et al. (2026). Low oxidative stress of cephalopod early life stages under chronic and intermittent hypoxia. *Marine Biology*, 173, 37. https://doi.org/10.1007/s00227-025-04779-1
+* Remédios B, Gomes M, Costa F, Vasconcelos RO, Rosa R, Pimentel MS (2025). Physiological and behavioral responses of seahorse newborns to acute hypoxia. *Marine Environmental Research*, 211, 107344. https://doi.org/10.1016/j.marenvres.2025.107344
+* Pereira BP, Oliveira R, Martins MD, Rosa R, Paula JR (2026). Ocean deoxygenation and warming disrupt cooperation in coral reef fish mutualisms. *Behavioral Ecology*, 37(2), araf152. https://doi.org/10.1093/beheco/araf152
+
 ## Table of Contents
 * [Citation](#citation)
+* [Published Use Cases](#published-use-cases)
 * [Two Approaches](#two-approaches)
-* [Ardoxy-OS](#ardoxy-os) *(under development)*
+* [Ardoxy-OS](#ardoxy-os)
   * [Requirements](#requirements)
   * [Installation](#installation)
-  * [Running Ardoxy-OS](#running-ardoxy-os)
-  * [Modes](#modes)
+  * [Live Mode](#live-mode)
+  * [Standalone Mode](#standalone-mode)
 * [Dedicated Example Sketches](#dedicated-example-sketches)
   * [Example 1: measure\_DO](#example-1-measure_do)
   * [Example 2: setpoint\_solenoid](#example-2-setpoint_solenoid)
@@ -49,27 +60,26 @@ Ardoxy offers two complementary ways to use the system, depending on how much co
 | Arduino upload | Once | Once per experiment type |
 | Configuration | Python GUI at runtime | Edit constants in the sketch before upload |
 | Best for | Rapid setup, switching modes without re-uploading | Customised experiments, offline/standalone use |
-| Status | Under active development | Stable |
+| Status | Stable | Stable |
 
 ---
 
 ## Ardoxy-OS
 
-> **Under development.** Core functionality (measurement, single setpoint, sequence control) is implemented. The interface and feature set are still evolving.
+Ardoxy-OS replaces sketch-editing with runtime configuration: upload one sketch, then configure and run experiments from a Python GUI without touching the Arduino code again. It comes in two modes, both driven by the same GUI application:
 
-Ardoxy-OS consists of two parts:
-
-* **`examples/ardoxy_live/ardoxy_live.ino`** — a general-purpose Arduino sketch that is uploaded once. It sits idle until configured from the PC and supports all control modes without re-uploading.
-* **`utils/ardoxy_gui/ardoxy_gui.py`** — a Python GUI application that connects to the Arduino over USB serial, configures the experiment, starts/stops measurement and control, and plots and logs the results in real time.
+* **Live mode** (`examples/ardoxy_live/ardoxy_live.ino`) — the Arduino stays connected to a PC for the whole experiment. Best for short/medium runs where live monitoring is useful.
+* **Standalone mode** (`examples/ardoxy_standalone/ardoxy_standalone.ino` or `examples/ardoxy_standalone_20x4lcd/ardoxy_standalone_20x4lcd.ino`) — the PC is only needed to configure the experiment; the Arduino then runs autonomously with SD card logging, RTC-scheduled start times, and an LCD status display. Supports up to 8 channels across two FireStingO2 sensors, each channel configured and scheduled independently.
 
 ### Requirements
 
 **Arduino side**
-* Arduino Uno (or compatible)
+* Arduino Uno (Live mode) or Arduino Mega with Adafruit Datalogger Shield + RTC (Standalone mode)
 * [Arduino IDE](https://www.arduino.cc/en/software)
 * Arduino libraries (install via the IDE Library Manager):
   * `Ardoxy` (this library)
   * `PID` by Brett Beauregard
+  * Standalone mode only: `SdFat`, `RTClib`, and either `Adafruit_RGBLCDShield` (16×2 LCD, `ardoxy_standalone`) or the 20×4 LCD library used by `ardoxy_standalone_20x4lcd`
 
 **PC side**
 * Python 3.9 or later
@@ -89,17 +99,16 @@ matplotlib
    pip install -r utils/ardoxy_gui/requirements.txt
    ```
 
-3. **Upload the live sketch.** Open `examples/ardoxy_live/ardoxy_live.ino` in the Arduino IDE, select your board and port, and upload. This only needs to be done once.
+3. **Upload the sketch.** Open `examples/ardoxy_live/ardoxy_live.ino` (Live mode) or the appropriate `ardoxy_standalone` variant (Standalone mode) in the Arduino IDE, select your board and port, and upload. This only needs to be done once.
 
-4. **Connect hardware.** Wire the FireSting oxygen meter to the Arduino as described in the dedicated sketches (RX=pin 8, TX=pin 9 by default). Connect relay modules to the digital output pins you intend to use for valve control.
+4. **Connect hardware.** Wire the FireSting oxygen meter(s) to the Arduino as described in the sketch header comments. Connect relay modules to the digital output pins you intend to use for valve control.
 
-### Running Ardoxy-OS
+### Live Mode
 
 ```
 python utils/ardoxy_gui/ardoxy_gui.py
 ```
-
-The GUI opens with three tabs:
+Choose *Live Experiment* from the launcher. The GUI opens with three tabs:
 
 **Connect** — select the COM port of your Arduino and click *Connect*. The Arduino state (`IDLE`, `CONFIGURED`, `RUNNING`) is displayed here.
 
@@ -107,13 +116,28 @@ The GUI opens with three tabs:
 
 **Run & Monitor** — click *Start* to begin. A live chart shows DO (% air saturation) per channel and temperature. A data table shows the last 200 readings. Click *Save CSV* at any time to export all accumulated data. Click *Stop* to halt the run; the configuration is preserved and the run can be resumed with *Start* again.
 
-### Modes
+#### Modes
 
 | Mode | Description |
 |---|---|
 | **MEASURE** | Continuous DO and temperature measurement. No valve control. Runs until *Stop* is pressed. |
 | **SETPOINT** | PID-controlled solenoid valve(s) maintain DO at a single target value for a defined duration. |
 | **SEQUENCE** | Multi-phase experiment. Each phase is a *hold* (maintain a setpoint), *change* (ramp to a new setpoint), or *pause* (valves closed). Phases are defined in the GUI table. |
+
+### Standalone Mode
+
+```
+python utils/ardoxy_gui/ardoxy_gui.py
+```
+Choose *Standalone Experiment* from the launcher. Unlike Live mode, each of the up to 8 channels is configured, scheduled, and run independently:
+
+* Assign relay pins, PID gains, and a short tank ID per channel.
+* Set each channel's mode (MEASURE, SETPOINT, or SEQUENCE) and, optionally, a specific start date/time — channels can start immediately or at a scheduled time in the future.
+* Once configured, save the config to the Arduino's SD card and disconnect the PC — the Arduino runs the experiment autonomously, logging to CSV files on the SD card and showing status on the LCD.
+* If power is lost mid-experiment, the Arduino automatically resumes from `STATE.TXT` on the SD card on reboot.
+* Reconnect the GUI at any time to check status, read back the saved configuration, or download log files from the SD card.
+
+For the full serial command reference shared by Live and Standalone mode, see [`docs/PROTOCOL.md`](./docs/PROTOCOL.md).
 
 ---
 
@@ -140,6 +164,10 @@ Additional dedicated sketches cover:
 * `sequence_solenoid` — multi-phase sequence control with solenoid valves
 * `sequence_motor` — multi-phase sequence control with a stepper motor
 * `standalone_solenoid` — fully autonomous 4-channel control with SD card logging, RTC, and LCD display (no PC required)
+* `standalone_solenoid_8ch` — same as above, but across 8 channels using two FireStingO2 sensors
+* `manual_communication_uno` / `manual_communication_mega` — bypass the Ardoxy library entirely and relay raw serial commands to the FireSting via the Serial Monitor; useful for testing sensor wiring/calibration or exploring the FireSting communication protocol directly
+
+> **Note:** `standalone_solenoid` and `standalone_solenoid_8ch` require editing constants and re-uploading for every new experiment. For SD/RTC/LCD-based autonomous logging *without* re-uploading between experiments, use [Standalone Mode](#standalone-mode) instead.
 
 ### Python Sketch Builder
 The [Python Sketch Builder](./utils/Single%20Setpoint%20Sketch%20Builder.py) is a GUI tool that generates a ready-to-upload `setpoint_solenoid`-style sketch with user-defined parameters (setpoint, PID gains, pins, timing) for 1–4 channels, without editing code manually.

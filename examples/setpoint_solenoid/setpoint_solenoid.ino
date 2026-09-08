@@ -1,5 +1,7 @@
 /*
   Ardoxy example
+  Author: Stefan Mucha
+  Cite: Mucha S (2025) J Exp Biol 228(1):jeb249207. https://doi.org/10.1242/jeb.249207
 
   Regulate DO to a static setpoint with defined experimental duration using a solenoid valve.
   Oxygen sensor is calbrated using the Pyro Oxygen Logger Software.
@@ -31,7 +33,6 @@
   Import the settings in SerialPlot using File>>Load Settings
   Or simply read the values from the serial monitor or use another serial logging software (PuTTy etc.)
 
-  by Stefan Mucha
 
 */
 

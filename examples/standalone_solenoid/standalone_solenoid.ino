@@ -1,7 +1,9 @@
 
 /*
   Ardoxy example
-  
+  Author: Stefan Mucha
+  Cite: Mucha S (2025) J Exp Biol 228(1):jeb249207. https://doi.org/10.1242/jeb.249207
+
   Regulate DO to a sequence of setpoints with defined durations using solenoid valves.
   DO is displayed on LCD and stored on SD card.
   Oxygen sensor is calbrated using the Pyro Oxygen Logger Software.
@@ -29,7 +31,6 @@
   No software needed, values are stored on SD card, or
   simply read the values from the serial monitor or LCD display
 
-  by Stefan Mucha
 
 */
 

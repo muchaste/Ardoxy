@@ -1,6 +1,7 @@
 /*
   ardoxy_live.ino
   Author: Stefan Mucha with Claude Sonnet 4.6
+  Cite: Mucha S (2025) J Exp Biol 228(1):jeb249207. https://doi.org/10.1242/jeb.249207
   Ardoxy Live Experiment Sketch — upload once, configure via ardoxy_gui.py
   Requires a permanent USB serial connection to a PC running ardoxy_gui.py.
 

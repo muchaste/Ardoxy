@@ -1,6 +1,7 @@
 /*
   Ardoxy example — standalone_solenoid_8ch
   Author: Stefan Mucha
+  Cite: Mucha S (2025) J Exp Biol 228(1):jeb249207. https://doi.org/10.1242/jeb.249207
 
   Regulate DO on up to 8 channels across TWO FireStingO2 sensors using solenoid valves.
   DO is displayed on LCD and stored on SD card.

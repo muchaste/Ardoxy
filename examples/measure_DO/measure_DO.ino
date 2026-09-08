@@ -1,5 +1,7 @@
 /*
   Ardoxy example
+  Author: Stefan Mucha
+  Cite: Mucha S (2025) J Exp Biol 228(1):jeb249207. https://doi.org/10.1242/jeb.249207
 
   Measure DO.
   Oxygen sensor is calbrated using the Pyro Oxygen Logger Software.

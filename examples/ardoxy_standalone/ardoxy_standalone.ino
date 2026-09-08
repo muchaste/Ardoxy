@@ -1,6 +1,7 @@
 /*
   ardoxy_standalone.ino  — v2
   Author: Stefan Mucha with Claude Sonnet 4.6
+  Cite: Mucha S (2025) J Exp Biol 228(1):jeb249207. https://doi.org/10.1242/jeb.249207
   Ardoxy Standalone Sketch — upload once, configure via ardoxy_gui.py (Standalone Mode),
   then run autonomously with SD card logging and LCD display.
   Power-outage recovery is automatic via STATE.TXT on the SD card.

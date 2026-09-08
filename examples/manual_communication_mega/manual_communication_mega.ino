@@ -1,6 +1,7 @@
 /*
   Ardoxy example - manual communication with FireSting
   Author: Stefan Mucha
+  Cite: Mucha S (2025) J Exp Biol 228(1):jeb249207. https://doi.org/10.1242/jeb.249207
 
   This example does not use the Ardoxy library, 
   it relays serial commands directly to a connected FireSting.
