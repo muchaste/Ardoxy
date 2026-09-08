@@ -1,5 +1,6 @@
 /*
   Ardoxy example
+  Author: Stefan Mucha
 
   Regulate DO to a sequence of setpoints with defined durations using a stepper motor with a needle valve.
   Oxygen sensor is calbrated using the Pyro Oxygen Logger Software.
@@ -28,7 +29,6 @@
   Import the settings in SerialPlot using File>>Load Settings
   Or simply read the values from the serial monitor or use another serial logging software (PuTTy etc.)
   
-  by Stefan Mucha
 
 */
 

@@ -1,5 +1,6 @@
 /*
   Ardoxy example — standalone_solenoid_8ch
+  Author: Stefan Mucha
 
   Regulate DO on up to 8 channels across TWO FireStingO2 sensors using solenoid valves.
   DO is displayed on LCD and stored on SD card.
@@ -22,7 +23,6 @@
       FireSting 2 — 7-pin connector: Pin1=GND, Pin2=5V, Pin4=RX2(17), Pin5=TX2(16)
   - Solenoid valves on relay module (one per channel)
 
-  by Stefan Mucha
 */
 
 #include <Ardoxy.h>
